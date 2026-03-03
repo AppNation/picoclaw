@@ -39,7 +39,7 @@ Each PicoClaw pod identifies itself to the backend using its Kubernetes `HOSTNAM
 | `PICOCLAW_CHANNELS_WEBSOCKETCLIENT_AUTH_TOKEN` | Optional bearer token for authentication |
 | `PICOCLAW_CHANNELS_WEBSOCKETCLIENT_RECONNECT_DELAY` | Base reconnection delay in seconds (default: 5) |
 | `PICOCLAW_CHANNELS_WEBSOCKETCLIENT_PING_INTERVAL` | Keepalive ping interval in seconds (default: 30) |
-| `PICOCLAW_CHANNELS_WEBSOCKETCLIENT_ALLOW_FROM` | Comma-separated sender ID whitelist (empty = allow all) |
+| `PICOCLAW_CHANNELS_WEBSOCKETCLIENT_ALLOW_FROM` | Comma-separated sender ID whitelist (e.g., `user1,user2`; empty = allow all) |
 
 ### Config Fields
 

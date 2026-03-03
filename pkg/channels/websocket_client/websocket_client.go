@@ -83,6 +83,10 @@ func NewWebSocketClientChannel(
 }
 
 func (c *WebSocketClientChannel) Start(ctx context.Context) error {
+	if c.IsRunning() {
+		return fmt.Errorf("websocket_client: channel already running")
+	}
+
 	c.hostname = os.Getenv("HOSTNAME")
 	if c.hostname == "" {
 		c.hostname = "unknown"
@@ -144,14 +148,6 @@ func (c *WebSocketClientChannel) Send(ctx context.Context, msg bus.OutboundMessa
 	default:
 	}
 
-	c.connMu.Lock()
-	conn := c.conn
-	c.connMu.Unlock()
-
-	if conn == nil {
-		return fmt.Errorf("websocket_client: not connected: %w", channels.ErrTemporary)
-	}
-
 	outMsg := OutboundWSMessage{
 		Type:    "response",
 		UserID:  msg.ChatID,
@@ -168,7 +164,15 @@ func (c *WebSocketClientChannel) Send(ctx context.Context, msg bus.OutboundMessa
 		return fmt.Errorf("websocket_client: marshal failed: %w", channels.ErrSendFailed)
 	}
 
+	c.connMu.Lock()
+	conn := c.conn
+	if conn == nil {
+		c.connMu.Unlock()
+		return fmt.Errorf("websocket_client: not connected: %w", channels.ErrTemporary)
+	}
 	c.writeMu.Lock()
+	c.connMu.Unlock()
+
 	_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	err = conn.WriteMessage(websocket.TextMessage, data)
 	_ = conn.SetWriteDeadline(time.Time{})

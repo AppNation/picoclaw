@@ -533,5 +533,50 @@ func TestAllowFrom_Restricted(t *testing.T) {
 	assert.False(t, ch.IsAllowed("user789"))
 }
 
+func TestStart_DoubleStartGuard(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+
+	cfg := config.WebSocketClientConfig{
+		Enabled:        true,
+		BackendURL:     wsURL,
+		ReconnectDelay: 1,
+		PingInterval:   30,
+	}
+
+	ch, err := NewWebSocketClientChannel(cfg, msgBus)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	err = ch.Start(ctx)
+	require.NoError(t, err)
+	assert.True(t, ch.IsRunning())
+	defer func() { _ = ch.Stop(ctx) }()
+
+	// Second Start() must fail
+	err = ch.Start(ctx)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "already running")
+}
+
 // Re-export for test assertions
 var ErrNotRunning = channels.ErrNotRunning
