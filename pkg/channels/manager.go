@@ -267,6 +267,10 @@ func (m *Manager) initChannels() error {
 		m.initChannel("pico", "Pico")
 	}
 
+	if m.config.Channels.WebSocketClient.Enabled && m.config.Channels.WebSocketClient.BackendURL != "" {
+		m.initChannel("websocket_client", "WebSocket Client")
+	}
+
 	logger.InfoCF("channels", "Channel initialization completed", map[string]any{
 		"enabled_channels": len(m.channels),
 	})

@@ -160,6 +160,15 @@
       "max_steps": 10,
       "welcome_message": "Hello! I'm your AI assistant. How can I help you today?",
       "reasoning_channel_id": ""
+    },
+    "websocket_client": {
+      "_comment": "WebSocket Client - Connects to a backend WebSocket server for multi-tenant pod architecture.",
+      "enabled": false,
+      "backend_url": "wss://your-backend.com/ws",
+      "auth_token": "",
+      "reconnect_delay": 5,
+      "ping_interval": 30,
+      "allow_from": []
     }
   },
   "providers": {

@@ -156,6 +156,14 @@ func DefaultConfig() *Config {
 				MaxConnections: 100,
 				AllowFrom:      FlexibleStringSlice{},
 			},
+			WebSocketClient: WebSocketClientConfig{
+				Enabled:        false,
+				BackendURL:     "",
+				AuthToken:      "",
+				ReconnectDelay: 5,
+				PingInterval:   30,
+				AllowFrom:      FlexibleStringSlice{},
+			},
 		},
 		Providers: ProvidersConfig{
 			OpenAI: OpenAIProviderConfig{WebSearch: true},

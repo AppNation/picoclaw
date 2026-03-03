@@ -202,20 +202,21 @@ func (d *AgentDefaults) GetModelName() string {
 }
 
 type ChannelsConfig struct {
-	WhatsApp   WhatsAppConfig   `json:"whatsapp"`
-	Telegram   TelegramConfig   `json:"telegram"`
-	Feishu     FeishuConfig     `json:"feishu"`
-	Discord    DiscordConfig    `json:"discord"`
-	MaixCam    MaixCamConfig    `json:"maixcam"`
-	QQ         QQConfig         `json:"qq"`
-	DingTalk   DingTalkConfig   `json:"dingtalk"`
-	Slack      SlackConfig      `json:"slack"`
-	LINE       LINEConfig       `json:"line"`
-	OneBot     OneBotConfig     `json:"onebot"`
-	WeCom      WeComConfig      `json:"wecom"`
-	WeComApp   WeComAppConfig   `json:"wecom_app"`
-	WeComAIBot WeComAIBotConfig `json:"wecom_aibot"`
-	Pico       PicoConfig       `json:"pico"`
+	WhatsApp        WhatsAppConfig        `json:"whatsapp"`
+	Telegram        TelegramConfig        `json:"telegram"`
+	Feishu          FeishuConfig          `json:"feishu"`
+	Discord         DiscordConfig         `json:"discord"`
+	MaixCam         MaixCamConfig         `json:"maixcam"`
+	QQ              QQConfig              `json:"qq"`
+	DingTalk        DingTalkConfig        `json:"dingtalk"`
+	Slack           SlackConfig           `json:"slack"`
+	LINE            LINEConfig            `json:"line"`
+	OneBot          OneBotConfig          `json:"onebot"`
+	WeCom           WeComConfig           `json:"wecom"`
+	WeComApp        WeComAppConfig        `json:"wecom_app"`
+	WeComAIBot      WeComAIBotConfig      `json:"wecom_aibot"`
+	Pico            PicoConfig            `json:"pico"`
+	WebSocketClient WebSocketClientConfig `json:"websocket_client"`
 }
 
 // GroupTriggerConfig controls when the bot responds in group chats.
@@ -396,6 +397,15 @@ type PicoConfig struct {
 	MaxConnections  int                 `json:"max_connections,omitempty"`
 	AllowFrom       FlexibleStringSlice `json:"allow_from"                  env:"PICOCLAW_CHANNELS_PICO_ALLOW_FROM"`
 	Placeholder     PlaceholderConfig   `json:"placeholder,omitempty"`
+}
+
+type WebSocketClientConfig struct {
+	Enabled        bool                `json:"enabled"         env:"PICOCLAW_CHANNELS_WEBSOCKETCLIENT_ENABLED"`
+	BackendURL     string              `json:"backend_url"     env:"PICOCLAW_CHANNELS_WEBSOCKETCLIENT_BACKEND_URL"`
+	AuthToken      string              `json:"auth_token"      env:"PICOCLAW_CHANNELS_WEBSOCKETCLIENT_AUTH_TOKEN"`
+	ReconnectDelay int                 `json:"reconnect_delay" env:"PICOCLAW_CHANNELS_WEBSOCKETCLIENT_RECONNECT_DELAY"`
+	PingInterval   int                 `json:"ping_interval"   env:"PICOCLAW_CHANNELS_WEBSOCKETCLIENT_PING_INTERVAL"`
+	AllowFrom      FlexibleStringSlice `json:"allow_from"      env:"PICOCLAW_CHANNELS_WEBSOCKETCLIENT_ALLOW_FROM"`
 }
 
 type HeartbeatConfig struct {
