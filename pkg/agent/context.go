@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,9 +19,10 @@ import (
 )
 
 type ContextBuilder struct {
-	workspace    string
-	skillsLoader *skills.SkillsLoader
-	memory       *MemoryStore
+	workspace       string
+	systemFilesPath string // optional: directory of system-provided .md instruction files
+	skillsLoader    *skills.SkillsLoader
+	memory          *MemoryStore
 
 	// Cache for system prompt to avoid rebuilding on every call.
 	// This fixes issue #607: repeated reprocessing of the entire context.
@@ -39,6 +41,10 @@ type ContextBuilder struct {
 	// build time. This catches nested file creations/deletions/mtime changes
 	// that may not update the top-level skill root directory mtime.
 	skillFilesAtCache map[string]time.Time
+
+	// systemFilesAtCache snapshots the system instruction file set and mtimes
+	// at cache build time (same pattern as skillFilesAtCache).
+	systemFilesAtCache map[string]time.Time
 }
 
 func getGlobalConfigDir() string {
@@ -49,7 +55,7 @@ func getGlobalConfigDir() string {
 	return filepath.Join(home, ".picoclaw")
 }
 
-func NewContextBuilder(workspace string) *ContextBuilder {
+func NewContextBuilder(workspace string, systemFilesPath string) *ContextBuilder {
 	// builtin skills: skills directory in current project
 	// Use the skills/ directory under the current working directory
 	builtinSkillsDir := strings.TrimSpace(os.Getenv("PICOCLAW_BUILTIN_SKILLS"))
@@ -60,9 +66,10 @@ func NewContextBuilder(workspace string) *ContextBuilder {
 	globalSkillsDir := filepath.Join(getGlobalConfigDir(), "skills")
 
 	return &ContextBuilder{
-		workspace:    workspace,
-		skillsLoader: skills.NewSkillsLoader(workspace, globalSkillsDir, builtinSkillsDir),
-		memory:       NewMemoryStore(workspace),
+		workspace:       workspace,
+		systemFilesPath: systemFilesPath,
+		skillsLoader:    skills.NewSkillsLoader(workspace, globalSkillsDir, builtinSkillsDir),
+		memory:          NewMemoryStore(workspace),
 	}
 }
 
@@ -97,10 +104,16 @@ func (cb *ContextBuilder) BuildSystemPrompt() string {
 	// Core identity section
 	parts = append(parts, cb.getIdentity())
 
-	// Bootstrap files
+	// Bootstrap files (user-editable, from workspace)
 	bootstrapContent := cb.LoadBootstrapFiles()
 	if bootstrapContent != "" {
 		parts = append(parts, bootstrapContent)
+	}
+
+	// System instructions (immutable, from system_files_path)
+	systemContent := cb.LoadSystemFiles()
+	if systemContent != "" {
+		parts = append(parts, "# System Instructions\n\n"+systemContent)
 	}
 
 	// Skills - show summary, AI can read full content with read_file tool
@@ -157,6 +170,7 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache() string {
 	cb.cachedAt = baseline.maxMtime
 	cb.existedAtCache = baseline.existed
 	cb.skillFilesAtCache = baseline.skillFiles
+	cb.systemFilesAtCache = baseline.systemFiles
 
 	logger.DebugCF("agent", "System prompt cached",
 		map[string]any{
@@ -177,6 +191,7 @@ func (cb *ContextBuilder) InvalidateCache() {
 	cb.cachedAt = time.Time{}
 	cb.existedAtCache = nil
 	cb.skillFilesAtCache = nil
+	cb.systemFilesAtCache = nil
 
 	logger.DebugCF("agent", "System prompt cache invalidated", nil)
 }
@@ -211,9 +226,10 @@ func (cb *ContextBuilder) skillRoots() []string {
 // cacheBaseline holds the file existence snapshot and the latest observed
 // mtime across all tracked paths. Used as the cache reference point.
 type cacheBaseline struct {
-	existed    map[string]bool
-	skillFiles map[string]time.Time
-	maxMtime   time.Time
+	existed     map[string]bool
+	skillFiles  map[string]time.Time
+	systemFiles map[string]time.Time
+	maxMtime    time.Time
 }
 
 // buildCacheBaseline records which tracked paths currently exist and computes
@@ -221,12 +237,15 @@ type cacheBaseline struct {
 // Called under write lock when the cache is built.
 func (cb *ContextBuilder) buildCacheBaseline() cacheBaseline {
 	skillRoots := cb.skillRoots()
+	sysRoots := cb.systemFileRoots()
 
-	// All paths whose existence we track: source files + all skill roots.
+	// All paths whose existence we track: source files + skill roots + system file roots.
 	allPaths := append(cb.sourcePaths(), skillRoots...)
+	allPaths = append(allPaths, sysRoots...)
 
 	existed := make(map[string]bool, len(allPaths))
 	skillFiles := make(map[string]time.Time)
+	systemFiles := make(map[string]time.Time)
 	var maxMtime time.Time
 
 	for _, p := range allPaths {
@@ -253,6 +272,21 @@ func (cb *ContextBuilder) buildCacheBaseline() cacheBaseline {
 		})
 	}
 
+	// Walk system file roots to snapshot system instruction files and mtimes.
+	for _, root := range sysRoots {
+		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+			if walkErr == nil && !d.IsDir() {
+				if info, err := os.Stat(path); err == nil {
+					systemFiles[path] = info.ModTime()
+					if info.ModTime().After(maxMtime) {
+						maxMtime = info.ModTime()
+					}
+				}
+			}
+			return nil
+		})
+	}
+
 	// If no tracked files exist yet (empty workspace), maxMtime is zero.
 	// Use a very old non-zero time so that:
 	// 1. cachedAt.IsZero() won't trigger perpetual rebuilds.
@@ -263,7 +297,7 @@ func (cb *ContextBuilder) buildCacheBaseline() cacheBaseline {
 		maxMtime = time.Unix(1, 0)
 	}
 
-	return cacheBaseline{existed: existed, skillFiles: skillFiles, maxMtime: maxMtime}
+	return cacheBaseline{existed: existed, skillFiles: skillFiles, systemFiles: systemFiles, maxMtime: maxMtime}
 }
 
 // sourceFilesChangedLocked checks whether any workspace source file has been
@@ -293,7 +327,17 @@ func (cb *ContextBuilder) sourceFilesChangedLocked() bool {
 			return true
 		}
 	}
-	if skillFilesChangedSince(cb.skillRoots(), cb.skillFilesAtCache) {
+	if dirFilesChangedSince(cb.skillRoots(), cb.skillFilesAtCache) {
+		return true
+	}
+
+	// --- System file roots ---
+	for _, root := range cb.systemFileRoots() {
+		if cb.fileChangedSince(root) {
+			return true
+		}
+	}
+	if dirFilesChangedSince(cb.systemFileRoots(), cb.systemFilesAtCache) {
 		return true
 	}
 
@@ -334,10 +378,10 @@ func (cb *ContextBuilder) fileChangedSince(path string) bool {
 // if the callback returned nil when its err parameter is non-nil.
 var errWalkStop = errors.New("walk stop")
 
-// skillFilesChangedSince compares the current recursive skill file tree
-// against the cache-time snapshot. Any create/delete/mtime drift invalidates
-// the cache.
-func skillFilesChangedSince(skillRoots []string, filesAtCache map[string]time.Time) bool {
+// dirFilesChangedSince compares the current recursive file tree under the
+// given roots against the cache-time snapshot. Any create/delete/mtime drift
+// invalidates the cache. Used for both skill files and system files.
+func dirFilesChangedSince(roots []string, filesAtCache map[string]time.Time) bool {
 	// Defensive: if the snapshot was never initialized, force rebuild.
 	if filesAtCache == nil {
 		return true
@@ -356,9 +400,9 @@ func skillFilesChangedSince(skillRoots []string, filesAtCache map[string]time.Ti
 		}
 	}
 
-	// Check no new files appeared under any skill root.
+	// Check no new files appeared under any root.
 	changed := false
-	for _, root := range skillRoots {
+	for _, root := range roots {
 		if strings.TrimSpace(root) == "" {
 			continue
 		}
@@ -392,6 +436,45 @@ func skillFilesChangedSince(skillRoots []string, filesAtCache map[string]time.Ti
 	}
 
 	return false
+}
+
+// systemFileRoots returns the system file root directories tracked for cache
+// invalidation. Empty when systemFilesPath is not configured.
+func (cb *ContextBuilder) systemFileRoots() []string {
+	if cb.systemFilesPath == "" {
+		return nil
+	}
+	return []string{cb.systemFilesPath}
+}
+
+// LoadSystemFiles recursively discovers all .md files under systemFilesPath,
+// sorts them by relative path for deterministic ordering, and returns their
+// concatenated content. Returns empty string if systemFilesPath is not set
+// or contains no .md files.
+func (cb *ContextBuilder) LoadSystemFiles() string {
+	if cb.systemFilesPath == "" {
+		return ""
+	}
+
+	var files []string
+	_ = filepath.WalkDir(cb.systemFilesPath, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr == nil && !d.IsDir() && strings.HasSuffix(strings.ToLower(d.Name()), ".md") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	sort.Strings(files)
+
+	var sb strings.Builder
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		rel, _ := filepath.Rel(cb.systemFilesPath, f)
+		fmt.Fprintf(&sb, "## %s\n\n%s\n\n", rel, data)
+	}
+	return sb.String()
 }
 
 func (cb *ContextBuilder) LoadBootstrapFiles() string {

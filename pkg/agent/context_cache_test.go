@@ -41,7 +41,7 @@ func TestSingleSystemMessage(t *testing.T) {
 	})
 	defer os.RemoveAll(tmpDir)
 
-	cb := NewContextBuilder(tmpDir)
+	cb := NewContextBuilder(tmpDir, "")
 
 	tests := []struct {
 		name    string
@@ -159,7 +159,7 @@ func TestMtimeAutoInvalidation(t *testing.T) {
 			tmpDir := setupWorkspace(t, map[string]string{tt.file: tt.contentV1})
 			defer os.RemoveAll(tmpDir)
 
-			cb := NewContextBuilder(tmpDir)
+			cb := NewContextBuilder(tmpDir, "")
 
 			sp1 := cb.BuildSystemPromptWithCache()
 
@@ -195,7 +195,7 @@ func TestMtimeAutoInvalidation(t *testing.T) {
 		tmpDir := setupWorkspace(t, nil)
 		defer os.RemoveAll(tmpDir)
 
-		cb := NewContextBuilder(tmpDir)
+		cb := NewContextBuilder(tmpDir, "")
 		_ = cb.BuildSystemPromptWithCache() // populate cache
 
 		// Touch skills directory (simulate new skill installed)
@@ -222,7 +222,7 @@ func TestExplicitInvalidateCache(t *testing.T) {
 	})
 	defer os.RemoveAll(tmpDir)
 
-	cb := NewContextBuilder(tmpDir)
+	cb := NewContextBuilder(tmpDir, "")
 
 	sp1 := cb.BuildSystemPromptWithCache()
 	cb.InvalidateCache()
@@ -250,7 +250,7 @@ func TestCacheStability(t *testing.T) {
 	})
 	defer os.RemoveAll(tmpDir)
 
-	cb := NewContextBuilder(tmpDir)
+	cb := NewContextBuilder(tmpDir, "")
 
 	results := make([]string, 5)
 	for i := range results {
@@ -299,7 +299,7 @@ func TestNewFileCreationInvalidatesCache(t *testing.T) {
 			tmpDir := setupWorkspace(t, nil)
 			defer os.RemoveAll(tmpDir)
 
-			cb := NewContextBuilder(tmpDir)
+			cb := NewContextBuilder(tmpDir, "")
 
 			// Populate cache — file does not exist yet
 			sp1 := cb.BuildSystemPromptWithCache()
@@ -344,7 +344,7 @@ Original content.`
 	})
 	defer os.RemoveAll(tmpDir)
 
-	cb := NewContextBuilder(tmpDir)
+	cb := NewContextBuilder(tmpDir, "")
 
 	// Populate cache
 	sp1 := cb.BuildSystemPromptWithCache()
@@ -405,7 +405,7 @@ description: global-v1
 		t.Fatal(err)
 	}
 
-	cb := NewContextBuilder(tmpDir)
+	cb := NewContextBuilder(tmpDir, "")
 	sp1 := cb.BuildSystemPromptWithCache()
 	if !strings.Contains(sp1, "global-v1") {
 		t.Fatal("expected initial prompt to contain global skill description")
@@ -465,7 +465,7 @@ description: builtin-v1
 		t.Fatal(err)
 	}
 
-	cb := NewContextBuilder(tmpDir)
+	cb := NewContextBuilder(tmpDir, "")
 	sp1 := cb.BuildSystemPromptWithCache()
 	if !strings.Contains(sp1, "builtin-v1") {
 		t.Fatal("expected initial prompt to contain builtin skill description")
@@ -512,7 +512,7 @@ description: delete-me-v1
 	})
 	defer os.RemoveAll(tmpDir)
 
-	cb := NewContextBuilder(tmpDir)
+	cb := NewContextBuilder(tmpDir, "")
 	sp1 := cb.BuildSystemPromptWithCache()
 	if !strings.Contains(sp1, "delete-me-v1") {
 		t.Fatal("expected initial prompt to contain skill description")
@@ -552,7 +552,7 @@ func TestConcurrentBuildSystemPromptWithCache(t *testing.T) {
 	})
 	defer os.RemoveAll(tmpDir)
 
-	cb := NewContextBuilder(tmpDir)
+	cb := NewContextBuilder(tmpDir, "")
 
 	const goroutines = 20
 	const iterations = 50
@@ -615,7 +615,7 @@ func TestEmptyWorkspaceBaselineDetectsNewFiles(t *testing.T) {
 	tmpDir := setupWorkspace(t, nil)
 	defer os.RemoveAll(tmpDir)
 
-	cb := NewContextBuilder(tmpDir)
+	cb := NewContextBuilder(tmpDir, "")
 
 	// Build cache — all tracked files are absent, maxMtime falls back to epoch.
 	sp1 := cb.BuildSystemPromptWithCache()
@@ -656,7 +656,7 @@ func BenchmarkBuildMessagesWithCache(b *testing.B) {
 		os.WriteFile(filepath.Join(tmpDir, name), []byte(strings.Repeat("Content.\n", 10)), 0o644)
 	}
 
-	cb := NewContextBuilder(tmpDir)
+	cb := NewContextBuilder(tmpDir, "")
 	history := []providers.Message{
 		{Role: "user", Content: "previous message"},
 		{Role: "assistant", Content: "previous response"},
