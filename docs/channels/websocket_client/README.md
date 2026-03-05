@@ -174,12 +174,23 @@ Context messages inject backend events into the agent's session history without 
   "content": "Hello! How can I help you?",
   "metadata": {
     "pod_hostname": "picoclaw-user-123",
-    "timestamp": "2026-02-16T10:30:05Z"
+    "timestamp": "2026-02-16T10:30:05Z",
+    "usage_prompt_tokens": "1234",
+    "usage_completion_tokens": "567",
+    "usage_total_tokens": "1801"
   }
 }
 ```
 
-The `pod_hostname` and `timestamp` fields are automatically added to the outbound metadata by the channel.
+| Metadata field | Description |
+|----------------|-------------|
+| `pod_hostname` | Pod that generated this response (set automatically) |
+| `timestamp` | RFC3339 timestamp when the response was sent (set automatically) |
+| `usage_prompt_tokens` | Total prompt tokens consumed across all LLM iterations for this turn (omitted when the provider does not report usage, e.g. Ollama or local CLI providers) |
+| `usage_completion_tokens` | Total completion tokens generated across all LLM iterations for this turn |
+| `usage_total_tokens` | Sum of prompt and completion tokens |
+
+Token counts are **aggregated across all LLM iterations** within a single user turn. A turn that requires multiple tool calls (and therefore multiple LLM calls) reports the total tokens for the entire turn, not per-call.
 
 ## Connection Lifecycle
 

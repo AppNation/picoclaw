@@ -807,5 +807,82 @@ func TestContextMessage_EmptyContent_Ignored(t *testing.T) {
 	assert.Equal(t, "follow-up", msg.Content)
 }
 
+func TestSendMessage_WithUsageMetadata(t *testing.T) {
+	t.Parallel()
+
+	var receivedMsg OutboundWSMessage
+	msgReceived := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		if err := json.Unmarshal(data, &receivedMsg); err != nil {
+			return
+		}
+		close(msgReceived)
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+
+	cfg := config.WebSocketClientConfig{
+		Enabled:        true,
+		BackendURL:     wsURL,
+		ReconnectDelay: 1,
+		PingInterval:   30,
+	}
+
+	ch, err := NewWebSocketClientChannel(cfg, msgBus)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = ch.Start(ctx)
+	require.NoError(t, err)
+	defer func() { _ = ch.Stop(ctx) }()
+
+	ch.hostname = "test-pod-usage"
+
+	time.Sleep(100 * time.Millisecond)
+
+	err = ch.Send(ctx, bus.OutboundMessage{
+		Channel: "websocket_client",
+		ChatID:  "user-tok",
+		Content: "Response text",
+		Metadata: map[string]string{
+			"usage_prompt_tokens":     "100",
+			"usage_completion_tokens": "50",
+			"usage_total_tokens":      "150",
+		},
+	})
+	require.NoError(t, err)
+
+	select {
+	case <-msgReceived:
+		assert.Equal(t, "response", receivedMsg.Type)
+		assert.Equal(t, "user-tok", receivedMsg.ChatID)
+		assert.Equal(t, "Response text", receivedMsg.Content)
+		assert.Equal(t, "test-pod-usage", receivedMsg.Metadata["pod_hostname"])
+		assert.NotEmpty(t, receivedMsg.Metadata["timestamp"])
+		assert.Equal(t, "100", receivedMsg.Metadata["usage_prompt_tokens"])
+		assert.Equal(t, "50", receivedMsg.Metadata["usage_completion_tokens"])
+		assert.Equal(t, "150", receivedMsg.Metadata["usage_total_tokens"])
+	case <-time.After(3 * time.Second):
+		t.Fatal("Timed out waiting for message")
+	}
+}
+
 // Re-export for test assertions
 var ErrNotRunning = channels.ErrNotRunning

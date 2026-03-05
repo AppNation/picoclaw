@@ -400,7 +400,7 @@ func (h testHelper) executeAndGetResponse(tb testing.TB, ctx context.Context, ms
 	timeoutCtx, cancel := context.WithTimeout(ctx, responseTimeout)
 	defer cancel()
 
-	response, err := h.al.processMessage(timeoutCtx, msg)
+	response, _, err := h.al.processMessage(timeoutCtx, msg)
 	if err != nil {
 		tb.Fatalf("processMessage failed: %v", err)
 	}
@@ -968,7 +968,7 @@ func TestProcessMessage_ContextOnly_ReturnsEmpty(t *testing.T) {
 		ContextOnly: true,
 	}
 
-	response, err := al.processMessage(ctx, msg)
+	response, _, err := al.processMessage(ctx, msg)
 	if err != nil {
 		t.Fatalf("processMessage failed: %v", err)
 	}
@@ -1003,7 +1003,7 @@ func TestProcessMessage_ContextOnly_InjectsSessionHistory(t *testing.T) {
 		ContextOnly: true,
 	}
 
-	_, err := al.processMessage(ctx, msg)
+	_, _, err := al.processMessage(ctx, msg)
 	if err != nil {
 		t.Fatalf("processMessage failed: %v", err)
 	}

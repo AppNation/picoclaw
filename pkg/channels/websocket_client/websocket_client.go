@@ -148,15 +148,19 @@ func (c *WebSocketClientChannel) Send(ctx context.Context, msg bus.OutboundMessa
 	default:
 	}
 
+	outMeta := map[string]string{
+		"pod_hostname": c.hostname,
+		"timestamp":    time.Now().UTC().Format(time.RFC3339),
+	}
+	for k, v := range msg.Metadata {
+		outMeta[k] = v
+	}
 	outMsg := OutboundWSMessage{
-		Type:    "response",
-		UserID:  msg.ChatID,
-		ChatID:  msg.ChatID,
-		Content: msg.Content,
-		Metadata: map[string]string{
-			"pod_hostname": c.hostname,
-			"timestamp":    time.Now().UTC().Format(time.RFC3339),
-		},
+		Type:     "response",
+		UserID:   msg.ChatID,
+		ChatID:   msg.ChatID,
+		Content:  msg.Content,
+		Metadata: outMeta,
 	}
 
 	data, err := json.Marshal(outMsg)

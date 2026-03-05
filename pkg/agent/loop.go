@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -267,7 +268,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				// 	}
 				// }()
 
-				response, err := al.processMessage(ctx, msg)
+				response, usage, err := al.processMessage(ctx, msg)
 				if err != nil {
 					response = fmt.Sprintf("Error processing message: %v", err)
 				}
@@ -285,12 +286,13 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 							}
 						}
 					}
-
+	
 					if !alreadySent {
 						al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-							Channel: msg.Channel,
-							ChatID:  msg.ChatID,
-							Content: response,
+							Channel:  msg.Channel,
+							ChatID:   msg.ChatID,
+							Content:  response,
+							Metadata: usageToMetadata(usage),
 						})
 						logger.InfoCF("agent", "Published outbound response",
 							map[string]any{
@@ -401,7 +403,8 @@ func (al *AgentLoop) ProcessDirectWithChannel(
 		SessionKey: sessionKey,
 	}
 
-	return al.processMessage(ctx, msg)
+	response, _, err := al.processMessage(ctx, msg)
+	return response, err
 }
 
 // ProcessHeartbeat processes a heartbeat request without session history.
@@ -414,7 +417,7 @@ func (al *AgentLoop) ProcessHeartbeat(
 	if agent == nil {
 		return "", fmt.Errorf("no default agent for heartbeat")
 	}
-	return al.runAgentLoop(ctx, agent, processOptions{
+	response, _, err := al.runAgentLoop(ctx, agent, processOptions{
 		SessionKey:      "heartbeat",
 		Channel:         channel,
 		ChatID:          chatID,
@@ -424,9 +427,10 @@ func (al *AgentLoop) ProcessHeartbeat(
 		SendResponse:    false,
 		NoHistory:       true, // Don't load session history for heartbeat
 	})
+	return response, err
 }
 
-func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {
+func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (string, *providers.UsageInfo, error) {
 	// Add message preview to log (show full content for error messages)
 	var logContent string
 	if strings.Contains(msg.Content, "Error:") || strings.Contains(msg.Content, "error") {
@@ -447,17 +451,19 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 
 	// Context-only messages inject into session history without triggering the LLM.
 	if msg.ContextOnly {
-		return al.handleContextInjection(ctx, msg)
+		resp, err := al.handleContextInjection(ctx, msg)
+		return resp, nil, err
 	}
 
 	// Route system messages to processSystemMessage
 	if msg.Channel == "system" {
-		return al.processSystemMessage(ctx, msg)
+		resp, err := al.processSystemMessage(ctx, msg)
+		return resp, nil, err
 	}
 
 	// Check for commands
 	if response, handled := al.handleCommand(ctx, msg); handled {
-		return response, nil
+		return response, nil, nil
 	}
 
 	// Route to determine agent and session key
@@ -475,7 +481,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		agent = al.registry.GetDefaultAgent()
 	}
 	if agent == nil {
-		return "", fmt.Errorf("no agent available for route (agent_id=%s)", route.AgentID)
+		return "", nil, fmt.Errorf("no agent available for route (agent_id=%s)", route.AgentID)
 	}
 
 	// Reset message-tool state for this round so we don't skip publishing due to a previous round.
@@ -508,6 +514,19 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		EnableSummary:   true,
 		SendResponse:    false,
 	})
+}
+
+// usageToMetadata converts a UsageInfo to a string metadata map.
+// Returns nil when u is nil (providers that don't report usage).
+func usageToMetadata(u *providers.UsageInfo) map[string]string {
+	if u == nil {
+		return nil
+	}
+	return map[string]string{
+		"usage_prompt_tokens":     strconv.Itoa(u.PromptTokens),
+		"usage_completion_tokens": strconv.Itoa(u.CompletionTokens),
+		"usage_total_tokens":      strconv.Itoa(u.TotalTokens),
+	}
 }
 
 // handleContextInjection processes a context-only inbound message by injecting
@@ -605,7 +624,7 @@ func (al *AgentLoop) processSystemMessage(
 	// Use the origin session for context
 	sessionKey := routing.BuildAgentMainSessionKey(agent.ID)
 
-	return al.runAgentLoop(ctx, agent, processOptions{
+	response, _, err := al.runAgentLoop(ctx, agent, processOptions{
 		SessionKey:      sessionKey,
 		Channel:         originChannel,
 		ChatID:          originChatID,
@@ -614,6 +633,7 @@ func (al *AgentLoop) processSystemMessage(
 		EnableSummary:   false,
 		SendResponse:    true,
 	})
+	return response, err
 }
 
 // runAgentLoop is the core message processing logic.
@@ -621,7 +641,7 @@ func (al *AgentLoop) runAgentLoop(
 	ctx context.Context,
 	agent *AgentInstance,
 	opts processOptions,
-) (string, error) {
+) (string, *providers.UsageInfo, error) {
 	// 0. Record last channel for heartbeat notifications (skip internal channels)
 	if opts.Channel != "" && opts.ChatID != "" {
 		// Don't record internal channels (cli, system, subagent)
@@ -664,9 +684,9 @@ func (al *AgentLoop) runAgentLoop(
 	agent.Sessions.AddMessage(opts.SessionKey, "user", opts.UserMessage)
 
 	// 4. Run LLM iteration loop
-	finalContent, iteration, err := al.runLLMIteration(ctx, agent, messages, opts)
+	finalContent, iteration, usage, err := al.runLLMIteration(ctx, agent, messages, opts)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	// If last tool had ForUser content and we already sent it, we might not need to send final response
@@ -689,9 +709,10 @@ func (al *AgentLoop) runAgentLoop(
 	// 8. Optional: send response via bus
 	if opts.SendResponse {
 		al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-			Channel: opts.Channel,
-			ChatID:  opts.ChatID,
-			Content: finalContent,
+			Channel:  opts.Channel,
+			ChatID:   opts.ChatID,
+			Content:  finalContent,
+			Metadata: usageToMetadata(usage),
 		})
 	}
 
@@ -705,7 +726,7 @@ func (al *AgentLoop) runAgentLoop(
 			"final_length": len(finalContent),
 		})
 
-	return finalContent, nil
+	return finalContent, usage, nil
 }
 
 func (al *AgentLoop) targetReasoningChannelID(channelName string) (chatID string) {
@@ -770,9 +791,11 @@ func (al *AgentLoop) runLLMIteration(
 	agent *AgentInstance,
 	messages []providers.Message,
 	opts processOptions,
-) (string, int, error) {
+) (string, int, *providers.UsageInfo, error) {
 	iteration := 0
 	var finalContent string
+	var totalUsage providers.UsageInfo
+	hasUsage := false
 
 	for iteration < agent.MaxIterations {
 		iteration++
@@ -927,7 +950,15 @@ func (al *AgentLoop) runLLMIteration(
 					"iteration": iteration,
 					"error":     err.Error(),
 				})
-			return "", iteration, fmt.Errorf("LLM call failed after retries: %w", err)
+			return "", iteration, nil, fmt.Errorf("LLM call failed after retries: %w", err)
+		}
+
+		// Accumulate token usage across all iterations for this turn.
+		if response.Usage != nil {
+			totalUsage.PromptTokens += response.Usage.PromptTokens
+			totalUsage.CompletionTokens += response.Usage.CompletionTokens
+			totalUsage.TotalTokens += response.Usage.TotalTokens
+			hasUsage = true
 		}
 
 		go al.handleReasoning(
@@ -1100,7 +1131,11 @@ func (al *AgentLoop) runLLMIteration(
 		}
 	}
 
-	return finalContent, iteration, nil
+	var usagePtr *providers.UsageInfo
+	if hasUsage {
+		usagePtr = &totalUsage
+	}
+	return finalContent, iteration, usagePtr, nil
 }
 
 // updateToolContexts updates the context for tools that need channel/chatID info.
