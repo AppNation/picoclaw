@@ -15,6 +15,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -947,5 +948,82 @@ func TestResolveMediaRefs_UsesMetaContentType(t *testing.T) {
 	}
 	if !strings.HasPrefix(result[0].Media[0], "data:image/jpeg;base64,") {
 		t.Fatalf("expected jpeg prefix, got %q", result[0].Media[0][:30])
+	}
+}
+
+// TestProcessMessage_ContextOnly_ReturnsEmpty verifies that a ContextOnly message
+// produces no response and publishes nothing to the outbound bus.
+func TestProcessMessage_ContextOnly_ReturnsEmpty(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	msg := bus.InboundMessage{
+		Channel:     "websocket_client",
+		SenderID:    "infra-service",
+		ChatID:      "user123",
+		Content:     "User upgraded to premium tier",
+		ContextOnly: true,
+	}
+
+	response, err := al.processMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("processMessage failed: %v", err)
+	}
+	if response != "" {
+		t.Errorf("expected empty response for ContextOnly message, got %q", response)
+	}
+
+	// Nothing should be on the outbound bus.
+	outCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	_, ok := msgBus.SubscribeOutbound(outCtx)
+	if ok {
+		t.Error("expected no outbound message for ContextOnly, but one was published")
+	}
+}
+
+// TestProcessMessage_ContextOnly_InjectsSessionHistory verifies that the context
+// content is stored in the agent session with the [Context] prefix.
+func TestProcessMessage_ContextOnly_InjectsSessionHistory(t *testing.T) {
+	al, _, _, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	msg := bus.InboundMessage{
+		Channel:     "websocket_client",
+		SenderID:    "billing-service",
+		ChatID:      "user456",
+		Content:     "Payment failed, account suspended",
+		ContextOnly: true,
+	}
+
+	_, err := al.processMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("processMessage failed: %v", err)
+	}
+
+	// Resolve the session key the same way handleContextInjection does.
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent to exist")
+	}
+
+	route := al.registry.ResolveRoute(routing.RouteInput{Channel: msg.Channel})
+	history := agent.Sessions.GetHistory(route.SessionKey)
+
+	if len(history) == 0 {
+		t.Fatal("expected session history to contain the injected context, got none")
+	}
+
+	last := history[len(history)-1]
+	if last.Role != "user" {
+		t.Errorf("expected role 'user', got %q", last.Role)
+	}
+	expected := "[Context] Payment failed, account suspended"
+	if last.Content != expected {
+		t.Errorf("expected content %q, got %q", expected, last.Content)
 	}
 }

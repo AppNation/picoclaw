@@ -578,5 +578,234 @@ func TestStart_DoubleStartGuard(t *testing.T) {
 	assert.Contains(t, err.Error(), "already running")
 }
 
+func TestContextMessage_PublishedToBus(t *testing.T) {
+	t.Parallel()
+
+	serverReady := make(chan *websocket.Conn, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		serverReady <- conn
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+
+	cfg := config.WebSocketClientConfig{
+		Enabled:        true,
+		BackendURL:     wsURL,
+		ReconnectDelay: 1,
+		PingInterval:   30,
+	}
+
+	ch, err := NewWebSocketClientChannel(cfg, msgBus)
+	require.NoError(t, err)
+
+	ch.hostname = "test-pod-ctx"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = ch.Start(ctx)
+	require.NoError(t, err)
+	defer func() { _ = ch.Stop(ctx) }()
+
+	var serverConn *websocket.Conn
+	select {
+	case serverConn = <-serverReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Server did not receive connection")
+	}
+	defer serverConn.Close()
+
+	ctxMsg := InboundWSMessage{
+		Type:     "context",
+		UserID:   "user-ctx",
+		ChatID:   "user-ctx",
+		SenderID: "user-ctx",
+		Content:  "User upgraded to premium tier",
+		Metadata: map[string]string{"source": "billing"},
+	}
+
+	data, err := json.Marshal(ctxMsg)
+	require.NoError(t, err)
+
+	err = serverConn.WriteMessage(websocket.TextMessage, data)
+	require.NoError(t, err)
+
+	inboundCtx, inboundCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer inboundCancel()
+
+	msg, ok := msgBus.ConsumeInbound(inboundCtx)
+	require.True(t, ok, "Expected context message on bus")
+	assert.Equal(t, "websocket_client", msg.Channel)
+	assert.Equal(t, "user-ctx", msg.ChatID)
+	assert.Equal(t, "user-ctx", msg.SenderID)
+	assert.Equal(t, "User upgraded to premium tier", msg.Content)
+	assert.True(t, msg.ContextOnly, "Expected ContextOnly flag to be true")
+}
+
+func TestContextMessage_BypassesAllowList(t *testing.T) {
+	t.Parallel()
+
+	serverReady := make(chan *websocket.Conn, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		serverReady <- conn
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+
+	// Only "allowed-user" passes the allow-list for regular messages.
+	cfg := config.WebSocketClientConfig{
+		Enabled:        true,
+		BackendURL:     wsURL,
+		ReconnectDelay: 1,
+		PingInterval:   30,
+		AllowFrom:      config.FlexibleStringSlice{"allowed-user"},
+	}
+
+	ch, err := NewWebSocketClientChannel(cfg, msgBus)
+	require.NoError(t, err)
+
+	ch.hostname = "test-pod-ctx-allowlist"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = ch.Start(ctx)
+	require.NoError(t, err)
+	defer func() { _ = ch.Stop(ctx) }()
+
+	var serverConn *websocket.Conn
+	select {
+	case serverConn = <-serverReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Server did not receive connection")
+	}
+	defer serverConn.Close()
+
+	// Send from a sender NOT in the allow-list as a context message.
+	ctxMsg := InboundWSMessage{
+		Type:     "context",
+		UserID:   "unlisted-infra",
+		ChatID:   "unlisted-infra",
+		SenderID: "unlisted-infra",
+		Content:  "Infra event: deployment completed",
+	}
+
+	data, err := json.Marshal(ctxMsg)
+	require.NoError(t, err)
+
+	err = serverConn.WriteMessage(websocket.TextMessage, data)
+	require.NoError(t, err)
+
+	// Context messages bypass allow-list — expect it on the bus.
+	inboundCtx, inboundCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer inboundCancel()
+
+	msg, ok := msgBus.ConsumeInbound(inboundCtx)
+	require.True(t, ok, "Context message should bypass allow-list and appear on bus")
+	assert.True(t, msg.ContextOnly)
+	assert.Equal(t, "unlisted-infra", msg.SenderID)
+}
+
+func TestContextMessage_EmptyContent_Ignored(t *testing.T) {
+	t.Parallel()
+
+	serverReady := make(chan *websocket.Conn, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		serverReady <- conn
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+
+	cfg := config.WebSocketClientConfig{
+		Enabled:        true,
+		BackendURL:     wsURL,
+		ReconnectDelay: 1,
+		PingInterval:   30,
+	}
+
+	ch, err := NewWebSocketClientChannel(cfg, msgBus)
+	require.NoError(t, err)
+
+	ch.hostname = "test-pod-ctx-empty"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = ch.Start(ctx)
+	require.NoError(t, err)
+	defer func() { _ = ch.Stop(ctx) }()
+
+	var serverConn *websocket.Conn
+	select {
+	case serverConn = <-serverReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Server did not receive connection")
+	}
+	defer serverConn.Close()
+
+	// Empty content context message should be dropped.
+	emptyCtxMsg := InboundWSMessage{
+		Type:     "context",
+		UserID:   "user-empty",
+		ChatID:   "user-empty",
+		SenderID: "user-empty",
+		Content:  "",
+	}
+
+	data, err := json.Marshal(emptyCtxMsg)
+	require.NoError(t, err)
+
+	err = serverConn.WriteMessage(websocket.TextMessage, data)
+	require.NoError(t, err)
+
+	// Send a real message after to ensure the read loop is still alive.
+	realMsg := InboundWSMessage{
+		Type:     "message",
+		UserID:   "user-empty",
+		ChatID:   "user-empty",
+		SenderID: "user-empty",
+		Content:  "follow-up",
+	}
+
+	data, err = json.Marshal(realMsg)
+	require.NoError(t, err)
+
+	err = serverConn.WriteMessage(websocket.TextMessage, data)
+	require.NoError(t, err)
+
+	inboundCtx, inboundCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer inboundCancel()
+
+	// Only the real message (not the empty context) should appear.
+	msg, ok := msgBus.ConsumeInbound(inboundCtx)
+	require.True(t, ok, "Expected the real follow-up message")
+	assert.False(t, msg.ContextOnly, "Real message should not have ContextOnly set")
+	assert.Equal(t, "follow-up", msg.Content)
+}
+
 // Re-export for test assertions
 var ErrNotRunning = channels.ErrNotRunning

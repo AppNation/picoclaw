@@ -305,6 +305,27 @@ func (c *BaseChannel) SetRunning(running bool) {
 	c.running.Store(running)
 }
 
+// PublishContextMessage publishes a context-only inbound message to the bus.
+// Unlike HandleMessage, this bypasses allow-list checks, typing indicators,
+// reactions, and placeholders. The agent will inject the content into the
+// session history without triggering an LLM call or sending any response.
+func (c *BaseChannel) PublishContextMessage(
+	ctx context.Context,
+	senderID, chatID, content string,
+	metadata map[string]string,
+) error {
+	msg := bus.InboundMessage{
+		Channel:     c.name,
+		SenderID:    senderID,
+		ChatID:      chatID,
+		Content:     content,
+		Peer:        bus.Peer{Kind: "direct", ID: senderID},
+		Metadata:    metadata,
+		ContextOnly: true,
+	}
+	return c.bus.PublishInbound(ctx, msg)
+}
+
 // SetMediaStore injects a MediaStore into the channel.
 func (c *BaseChannel) SetMediaStore(s media.MediaStore) { c.mediaStore = s }
 

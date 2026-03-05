@@ -84,7 +84,14 @@ The `HOSTNAME` environment variable is automatically set by Kubernetes to the po
 
 ## Message Protocol
 
-### Inbound (Backend → PicoClaw)
+### Message Types
+
+| Type | Description |
+|------|-------------|
+| `"message"` | A regular user message. Goes through allow-list checks, triggers the LLM, and sends a response back to the backend. |
+| `"context"` | A context-only message. Bypasses allow-list, triggers no LLM call, and sends no response. Content is injected into the agent's session history for use in future conversations. |
+
+### Inbound — Regular Message (Backend → PicoClaw)
 
 ```json
 {
@@ -102,12 +109,54 @@ The `HOSTNAME` environment variable is automatically set by Kubernetes to the po
 
 | Field | Description |
 |-------|-------------|
-| `type` | Message type identifier (e.g. `"message"`) |
+| `type` | `"message"` for regular user messages |
 | `user_id` | User identifier |
 | `chat_id` | Chat/session identifier. Defaults to `user_id` if empty |
 | `sender_id` | Sender identifier for allow-list checks. Defaults to `user_id` if empty |
 | `content` | Message text content |
 | `metadata` | Optional key-value metadata passed through to the agent |
+
+### Inbound — Context Message (Backend → PicoClaw)
+
+Context messages inject backend events into the agent's session history without triggering an LLM call or sending any reply. The agent silently gains awareness of the event and uses it when answering the next real user message.
+
+```json
+{
+  "type": "context",
+  "user_id": "user123",
+  "chat_id": "user123",
+  "content": "User upgraded to premium tier"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `type` | Must be `"context"` |
+| `user_id` | User identifier (used to resolve the session) |
+| `chat_id` | Chat/session identifier. Defaults to `user_id` if empty |
+| `sender_id` | Optional. Identifies the source (e.g. `"billing-service"`). Not used for allow-list checks |
+| `content` | Context text to inject (required; empty content is silently dropped) |
+| `metadata` | Optional key-value metadata |
+
+**Behavior:**
+
+- `allow_from` is **not** applied — context messages come from trusted backend infrastructure, not users
+- No typing indicator, reaction, or placeholder is triggered
+- No response is sent back to the backend
+- The content is stored in the agent session as `[Context] <content>` and becomes part of the LLM context on the next real user message
+
+**Example flow:**
+
+```
+14:00  Backend sends:  type=context, content="User upgraded to premium tier"
+       PicoClaw:       Saved to session history. No response sent.
+
+14:05  User sends:     "What features do I have access to now?"
+       PicoClaw LLM sees:
+           [Context] User upgraded to premium tier     ← injected at 14:00
+           User: What features do I have access to now?
+       PicoClaw responds with awareness of the upgrade.
+```
 
 ### Outbound (PicoClaw → Backend)
 

@@ -445,6 +445,11 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		},
 	)
 
+	// Context-only messages inject into session history without triggering the LLM.
+	if msg.ContextOnly {
+		return al.handleContextInjection(ctx, msg)
+	}
+
 	// Route system messages to processSystemMessage
 	if msg.Channel == "system" {
 		return al.processSystemMessage(ctx, msg)
@@ -503,6 +508,39 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		EnableSummary:   true,
 		SendResponse:    false,
 	})
+}
+
+// handleContextInjection processes a context-only inbound message by injecting
+// its content into the agent's session history. No LLM call is made and no
+// response is published — the context becomes available on the next real message.
+func (al *AgentLoop) handleContextInjection(ctx context.Context, msg bus.InboundMessage) (string, error) {
+	logger.InfoCF("agent", "Injecting context into session",
+		map[string]any{
+			"channel": msg.Channel,
+			"chat_id": msg.ChatID,
+			"length":  len(msg.Content),
+		})
+
+	route := al.registry.ResolveRoute(routing.RouteInput{
+		Channel:   msg.Channel,
+		AccountID: msg.Metadata["account_id"],
+		Peer:      extractPeer(msg),
+		GuildID:   msg.Metadata["guild_id"],
+		TeamID:    msg.Metadata["team_id"],
+	})
+
+	agent, ok := al.registry.GetAgent(route.AgentID)
+	if !ok {
+		agent = al.registry.GetDefaultAgent()
+	}
+	if agent == nil {
+		return "", fmt.Errorf("no agent available for context injection")
+	}
+
+	agent.Sessions.AddMessage(route.SessionKey, "user", fmt.Sprintf("[Context] %s", msg.Content))
+	agent.Sessions.Save(route.SessionKey)
+
+	return "", nil
 }
 
 func (al *AgentLoop) processSystemMessage(

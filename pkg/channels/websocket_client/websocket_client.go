@@ -303,6 +303,22 @@ func (c *WebSocketClientChannel) readLoop() {
 			senderID = inMsg.UserID
 		}
 
+		// Context messages are injected into session history only.
+		// No allow-list check, no typing/reaction/placeholder, no LLM call, no response.
+		if inMsg.Type == "context" {
+			logger.InfoCF(channelName, "Received context message", map[string]any{
+				"user_id": inMsg.UserID,
+				"chat_id": chatID,
+				"length":  len(inMsg.Content),
+			})
+			if err := c.PublishContextMessage(c.ctx, senderID, chatID, inMsg.Content, inMsg.Metadata); err != nil {
+				logger.ErrorCF(channelName, "Failed to publish context message", map[string]any{
+					"error": err.Error(),
+				})
+			}
+			continue
+		}
+
 		logger.InfoCF(channelName, "Received message", map[string]any{
 			"user_id":   inMsg.UserID,
 			"chat_id":   chatID,
