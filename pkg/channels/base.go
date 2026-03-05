@@ -309,6 +309,10 @@ func (c *BaseChannel) SetRunning(running bool) {
 // Unlike HandleMessage, this bypasses allow-list checks, typing indicators,
 // reactions, and placeholders. The agent will inject the content into the
 // session history without triggering an LLM call or sending any response.
+//
+// The Peer is keyed by chatID (the user's conversation identifier), NOT senderID
+// (which may be a service name like "backend"). This ensures the routing resolves
+// to the same session as the user's real messages, regardless of dm_scope.
 func (c *BaseChannel) PublishContextMessage(
 	ctx context.Context,
 	senderID, chatID, content string,
@@ -319,7 +323,7 @@ func (c *BaseChannel) PublishContextMessage(
 		SenderID:    senderID,
 		ChatID:      chatID,
 		Content:     content,
-		Peer:        bus.Peer{Kind: "direct", ID: senderID},
+		Peer:        bus.Peer{Kind: "direct", ID: chatID},
 		Metadata:    metadata,
 		ContextOnly: true,
 	}

@@ -963,6 +963,7 @@ func TestProcessMessage_ContextOnly_ReturnsEmpty(t *testing.T) {
 		Channel:     "websocket_client",
 		SenderID:    "infra-service",
 		ChatID:      "user123",
+		Peer:        bus.Peer{Kind: "direct", ID: "user123"},
 		Content:     "User upgraded to premium tier",
 		ContextOnly: true,
 	}
@@ -992,10 +993,12 @@ func TestProcessMessage_ContextOnly_InjectsSessionHistory(t *testing.T) {
 
 	ctx := context.Background()
 
+	const chatID = "user456"
 	msg := bus.InboundMessage{
 		Channel:     "websocket_client",
 		SenderID:    "billing-service",
-		ChatID:      "user456",
+		ChatID:      chatID,
+		Peer:        bus.Peer{Kind: "direct", ID: chatID},
 		Content:     "Payment failed, account suspended",
 		ContextOnly: true,
 	}
@@ -1005,13 +1008,17 @@ func TestProcessMessage_ContextOnly_InjectsSessionHistory(t *testing.T) {
 		t.Fatalf("processMessage failed: %v", err)
 	}
 
-	// Resolve the session key the same way handleContextInjection does.
+	// Resolve the session key the same way handleContextInjection does,
+	// using the same Peer to match the injected session key exactly.
 	agent := al.registry.GetDefaultAgent()
 	if agent == nil {
 		t.Fatal("expected default agent to exist")
 	}
 
-	route := al.registry.ResolveRoute(routing.RouteInput{Channel: msg.Channel})
+	route := al.registry.ResolveRoute(routing.RouteInput{
+		Channel: msg.Channel,
+		Peer:    extractPeer(msg),
+	})
 	history := agent.Sessions.GetHistory(route.SessionKey)
 
 	if len(history) == 0 {
