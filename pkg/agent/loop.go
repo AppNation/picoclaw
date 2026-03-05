@@ -522,11 +522,12 @@ func (al *AgentLoop) handleContextInjection(ctx context.Context, msg bus.Inbound
 		})
 
 	route := al.registry.ResolveRoute(routing.RouteInput{
-		Channel:   msg.Channel,
-		AccountID: msg.Metadata["account_id"],
-		Peer:      extractPeer(msg),
-		GuildID:   msg.Metadata["guild_id"],
-		TeamID:    msg.Metadata["team_id"],
+		Channel:    msg.Channel,
+		AccountID:  msg.Metadata["account_id"],
+		Peer:       extractPeer(msg),
+		ParentPeer: extractParentPeer(msg),
+		GuildID:    msg.Metadata["guild_id"],
+		TeamID:     msg.Metadata["team_id"],
 	})
 
 	agent, ok := al.registry.GetAgent(route.AgentID)
@@ -538,7 +539,14 @@ func (al *AgentLoop) handleContextInjection(ctx context.Context, msg bus.Inbound
 	}
 
 	agent.Sessions.AddMessage(route.SessionKey, "user", fmt.Sprintf("[Context] %s", msg.Content))
-	agent.Sessions.Save(route.SessionKey)
+	if err := agent.Sessions.Save(route.SessionKey); err != nil {
+		logger.WarnCF("agent", "Failed to persist context injection",
+			map[string]any{
+				"session_key": route.SessionKey,
+				"error":       err.Error(),
+			})
+		return "", err
+	}
 
 	return "", nil
 }

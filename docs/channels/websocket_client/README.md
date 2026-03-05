@@ -140,7 +140,13 @@ Context messages inject backend events into the agent's session history without 
 
 **Behavior:**
 
-- `allow_from` is **not** applied — context messages come from trusted backend infrastructure, not users
+- `allow_from` is **not** applied — context messages come from trusted backend infrastructure, not users. Because PicoClaw unconditionally trusts `type: "context"` senders, **the backend must enforce service-to-service authentication and validate the source of every context message**. Recommended controls (defense-in-depth):
+  - **mTLS or token-based auth** — require mutual TLS or a signed bearer token between your service and PicoClaw
+  - **Message signing/verification** — HMAC-sign the payload and verify before forwarding to PicoClaw
+  - **IP allowlisting** — restrict which IPs are permitted to send context messages
+  - **Audit logging** — log every context message with its source identity and timestamp
+  - **Rotate credentials regularly** — cycle mTLS certificates and auth tokens on a schedule
+  - **Validate message provenance** — reject context messages whose source cannot be verified against your service registry
 - No typing indicator, reaction, or placeholder is triggered
 - No response is sent back to the backend
 - The content is stored in the agent session as `[Context] <content>` and becomes part of the LLM context on the next real user message
