@@ -17,6 +17,8 @@ import (
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/skills"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 const (
@@ -56,18 +58,29 @@ type OutboundWSMessage struct {
 // WebSocketClientChannel connects to a backend WS server for bidirectional communication.
 type WebSocketClientChannel struct {
 	*channels.BaseChannel
-	cfg      config.WebSocketClientConfig
-	conn     *websocket.Conn
-	connMu   sync.Mutex // guards conn read/replace
-	writeMu  sync.Mutex // guards conn writes
-	ctx      context.Context
-	cancel   context.CancelFunc
-	hostname string
+	cfg            config.WebSocketClientConfig
+	conn           *websocket.Conn
+	connMu         sync.Mutex // guards conn read/replace
+	writeMu        sync.Mutex // guards conn writes
+	ctx            context.Context
+	cancel         context.CancelFunc
+	hostname       string
+	commandHandler *skillInstallCommandHandler
 }
 
 // NewWebSocketClientChannel creates a new WebSocket client channel.
 func NewWebSocketClientChannel(
 	cfg config.WebSocketClientConfig,
+	messageBus *bus.MessageBus,
+) (*WebSocketClientChannel, error) {
+	return NewWebSocketClientChannelWithDeps(cfg, config.SkillsToolsConfig{}, "", messageBus)
+}
+
+// NewWebSocketClientChannelWithDeps creates a new WebSocket client channel with optional skill-install dependencies.
+func NewWebSocketClientChannelWithDeps(
+	cfg config.WebSocketClientConfig,
+	skillsCfg config.SkillsToolsConfig,
+	workspace string,
 	messageBus *bus.MessageBus,
 ) (*WebSocketClientChannel, error) {
 	if cfg.BackendURL == "" {
@@ -76,10 +89,31 @@ func NewWebSocketClientChannel(
 
 	base := channels.NewBaseChannel(channelName, cfg, messageBus, cfg.AllowFrom)
 
-	return &WebSocketClientChannel{
+	ch := &WebSocketClientChannel{
 		BaseChannel: base,
 		cfg:         cfg,
-	}, nil
+	}
+
+	if cfg.Commands.Enabled {
+		registryMgr := skills.NewRegistryManagerFromConfig(skills.RegistryConfig{
+			ClawHub: skills.ClawHubConfig{
+				Enabled:         skillsCfg.Registries.ClawHub.Enabled,
+				BaseURL:         skillsCfg.Registries.ClawHub.BaseURL,
+				AuthToken:       skillsCfg.Registries.ClawHub.AuthToken,
+				SearchPath:      skillsCfg.Registries.ClawHub.SearchPath,
+				SkillsPath:      skillsCfg.Registries.ClawHub.SkillsPath,
+				DownloadPath:    skillsCfg.Registries.ClawHub.DownloadPath,
+				Timeout:         skillsCfg.Registries.ClawHub.Timeout,
+				MaxZipSize:      skillsCfg.Registries.ClawHub.MaxZipSize,
+				MaxResponseSize: skillsCfg.Registries.ClawHub.MaxResponseSize,
+			},
+			MaxConcurrentSearches: skillsCfg.MaxConcurrentSearches,
+		})
+		installer := tools.NewInstallSkillTool(registryMgr, workspace)
+		ch.commandHandler = newSkillInstallCommandHandler(cfg.Commands, installer)
+	}
+
+	return ch, nil
 }
 
 func (c *WebSocketClientChannel) Start(ctx context.Context) error {
@@ -163,7 +197,30 @@ func (c *WebSocketClientChannel) Send(ctx context.Context, msg bus.OutboundMessa
 		Metadata: outMeta,
 	}
 
-	data, err := json.Marshal(outMsg)
+	if err := c.sendWSMessage(ctx, outMsg); err != nil {
+		logger.ErrorCF(channelName, "Failed to send message", map[string]any{
+			"chat_id": msg.ChatID,
+			"error":   err.Error(),
+		})
+		return err
+	}
+
+	logger.DebugCF(channelName, "Message sent", map[string]any{
+		"chat_id": msg.ChatID,
+		"length":  len(msg.Content),
+	})
+
+	return nil
+}
+
+func (c *WebSocketClientChannel) sendWSMessage(ctx context.Context, msg OutboundWSMessage) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("websocket_client: marshal failed: %w", channels.ErrSendFailed)
 	}
@@ -183,19 +240,27 @@ func (c *WebSocketClientChannel) Send(ctx context.Context, msg bus.OutboundMessa
 	c.writeMu.Unlock()
 
 	if err != nil {
-		logger.ErrorCF(channelName, "Failed to send message", map[string]any{
-			"chat_id": msg.ChatID,
-			"error":   err.Error(),
-		})
 		return fmt.Errorf("websocket_client: write failed: %w", channels.ErrTemporary)
 	}
 
-	logger.DebugCF(channelName, "Message sent", map[string]any{
-		"chat_id": msg.ChatID,
-		"length":  len(msg.Content),
-	})
-
 	return nil
+}
+
+func (c *WebSocketClientChannel) sendEvent(ctx context.Context, eventName string, content string, metadata map[string]string) error {
+	outMeta := map[string]string{
+		"pod_hostname": c.hostname,
+		"timestamp":    time.Now().UTC().Format(time.RFC3339),
+		"event_name":   eventName,
+	}
+	for k, v := range metadata {
+		outMeta[k] = v
+	}
+
+	return c.sendWSMessage(ctx, OutboundWSMessage{
+		Type:     "event",
+		Content:  content,
+		Metadata: outMeta,
+	})
 }
 
 func (c *WebSocketClientChannel) connect() error {
@@ -289,6 +354,22 @@ func (c *WebSocketClientChannel) readLoop() {
 				"error":  err.Error(),
 				"length": len(message),
 			})
+			continue
+		}
+
+		if inMsg.Type == "command" {
+			if c.commandHandler == nil {
+				_ = c.sendEvent(c.ctx, "skill.install.failed", "command processing is disabled", map[string]string{
+					"error_code": "commands_disabled",
+				})
+				continue
+			}
+
+			if err := c.commandHandler.Handle(c.ctx, inMsg, c.sendEvent); err != nil {
+				logger.WarnCF(channelName, "Failed to handle command message", map[string]any{
+					"error": err.Error(),
+				})
+			}
 			continue
 		}
 

@@ -8,6 +8,11 @@ import (
 
 func init() {
 	channels.RegisterFactory("websocket_client", func(cfg *config.Config, b *bus.MessageBus) (channels.Channel, error) {
-		return NewWebSocketClientChannel(cfg.Channels.WebSocketClient, b)
+		return NewWebSocketClientChannelWithDeps(
+			cfg.Channels.WebSocketClient,
+			cfg.Tools.Skills,
+			cfg.WorkspacePath(),
+			b,
+		)
 	})
 }

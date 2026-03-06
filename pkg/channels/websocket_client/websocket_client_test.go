@@ -298,6 +298,278 @@ func TestReceiveMessage(t *testing.T) {
 	assert.Equal(t, "Hello PicoClaw!", msg.Content)
 }
 
+func TestReceiveCommand_InstallSkill_EmitsLifecycleEvents(t *testing.T) {
+	t.Parallel()
+
+	serverReady := make(chan *websocket.Conn, 1)
+	events := make(chan OutboundWSMessage, 8)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		serverReady <- conn
+
+		go func() {
+			for {
+				_, data, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+				var msg OutboundWSMessage
+				if err := json.Unmarshal(data, &msg); err != nil {
+					continue
+				}
+				events <- msg
+			}
+		}()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+
+	cfg := config.WebSocketClientConfig{
+		Enabled:        true,
+		BackendURL:     wsURL,
+		ReconnectDelay: 1,
+		PingInterval:   30,
+		Commands: config.WSCommandsConfig{
+			Enabled: true,
+		},
+	}
+
+	ch, err := NewWebSocketClientChannel(cfg, msgBus)
+	require.NoError(t, err)
+	ch.commandHandler = makeHandler(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, ch.Start(ctx))
+	defer func() { _ = ch.Stop(ctx) }()
+
+	var serverConn *websocket.Conn
+	select {
+	case serverConn = <-serverReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Server did not receive websocket connection")
+	}
+	defer serverConn.Close()
+
+	cmd := InboundWSMessage{
+		Type: "command",
+		Content: mustJSON(t, installCommandPayload{
+			RequestID: "req-ws-1",
+			Slug:      "ws-skill",
+			Registry:  "fake",
+		}),
+		Metadata: map[string]string{
+			"command_name": "skill.install",
+		},
+	}
+	data, err := json.Marshal(cmd)
+	require.NoError(t, err)
+	require.NoError(t, serverConn.WriteMessage(websocket.TextMessage, data))
+
+	var names []string
+	deadline := time.After(4 * time.Second)
+	for len(names) < 3 {
+		select {
+		case evt := <-events:
+			if evt.Type != "event" {
+				continue
+			}
+			names = append(names, evt.Metadata["event_name"])
+		case <-deadline:
+			t.Fatalf("timed out waiting for command events, got: %v", names)
+		}
+	}
+
+	assert.Equal(t, []string{"skill.install.accepted", "skill.install.started", "skill.install.succeeded"}, names)
+}
+
+func TestReceiveCommand_CommandsDisabled_EmitsError(t *testing.T) {
+	t.Parallel()
+
+	serverReady := make(chan *websocket.Conn, 1)
+	events := make(chan OutboundWSMessage, 8)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		serverReady <- conn
+
+		go func() {
+			for {
+				_, data, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+				var msg OutboundWSMessage
+				if err := json.Unmarshal(data, &msg); err != nil {
+					continue
+				}
+				events <- msg
+			}
+		}()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+
+	cfg := config.WebSocketClientConfig{
+		Enabled:        true,
+		BackendURL:     wsURL,
+		ReconnectDelay: 1,
+		PingInterval:   30,
+	}
+
+	ch, err := NewWebSocketClientChannel(cfg, msgBus)
+	require.NoError(t, err)
+	assert.Nil(t, ch.commandHandler)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, ch.Start(ctx))
+	defer func() { _ = ch.Stop(ctx) }()
+
+	var serverConn *websocket.Conn
+	select {
+	case serverConn = <-serverReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Server did not receive websocket connection")
+	}
+	defer serverConn.Close()
+
+	cmd := InboundWSMessage{
+		Type:     "command",
+		Content:  `{"request_id":"r1","slug":"s","registry":"fake"}`,
+		Metadata: map[string]string{"command_name": "skill.install"},
+	}
+	data, err := json.Marshal(cmd)
+	require.NoError(t, err)
+	require.NoError(t, serverConn.WriteMessage(websocket.TextMessage, data))
+
+	select {
+	case evt := <-events:
+		assert.Equal(t, "event", evt.Type)
+		assert.Equal(t, "skill.install.failed", evt.Metadata["event_name"])
+		assert.Equal(t, "commands_disabled", evt.Metadata["error_code"])
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for commands_disabled event")
+	}
+
+	// Verify readLoop is still alive by sending a normal message after the command
+	normalMsg := InboundWSMessage{
+		Type:     "message",
+		UserID:   "user-after-cmd",
+		ChatID:   "user-after-cmd",
+		SenderID: "user-after-cmd",
+		Content:  "still alive",
+	}
+	data, err = json.Marshal(normalMsg)
+	require.NoError(t, err)
+	require.NoError(t, serverConn.WriteMessage(websocket.TextMessage, data))
+
+	inboundCtx, inboundCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer inboundCancel()
+
+	msg, ok := msgBus.ConsumeInbound(inboundCtx)
+	require.True(t, ok, "readLoop should still process messages after command rejection")
+	assert.Equal(t, "still alive", msg.Content)
+}
+
+func TestReceiveCommand_DoesNotLeakToBus(t *testing.T) {
+	t.Parallel()
+
+	serverReady := make(chan *websocket.Conn, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		serverReady <- conn
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+
+	cfg := config.WebSocketClientConfig{
+		Enabled:        true,
+		BackendURL:     wsURL,
+		ReconnectDelay: 1,
+		PingInterval:   30,
+		Commands: config.WSCommandsConfig{
+			Enabled: true,
+		},
+	}
+
+	ch, err := NewWebSocketClientChannel(cfg, msgBus)
+	require.NoError(t, err)
+	ch.commandHandler = makeHandler(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, ch.Start(ctx))
+	defer func() { _ = ch.Stop(ctx) }()
+
+	var serverConn *websocket.Conn
+	select {
+	case serverConn = <-serverReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Server did not receive websocket connection")
+	}
+	defer serverConn.Close()
+
+	// Send a command
+	cmd := InboundWSMessage{
+		Type: "command",
+		Content: mustJSON(t, installCommandPayload{
+			RequestID: "req-no-leak",
+			Slug:      "leak-test",
+			Registry:  "fake",
+		}),
+		Metadata: map[string]string{"command_name": "skill.install"},
+	}
+	data, _ := json.Marshal(cmd)
+	require.NoError(t, serverConn.WriteMessage(websocket.TextMessage, data))
+
+	// Then send a normal message
+	normalMsg := InboundWSMessage{
+		Type:     "message",
+		UserID:   "user-noleak",
+		ChatID:   "user-noleak",
+		SenderID: "user-noleak",
+		Content:  "after-command",
+	}
+	data, _ = json.Marshal(normalMsg)
+	require.NoError(t, serverConn.WriteMessage(websocket.TextMessage, data))
+
+	inboundCtx, inboundCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer inboundCancel()
+
+	msg, ok := msgBus.ConsumeInbound(inboundCtx)
+	require.True(t, ok)
+	assert.Equal(t, "after-command", msg.Content, "command should not leak to inbound bus; first bus message must be the normal one")
+}
+
 func TestSend_NotRunning(t *testing.T) {
 	t.Parallel()
 

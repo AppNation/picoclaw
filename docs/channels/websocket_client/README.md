@@ -2,6 +2,8 @@
 
 The WebSocket client channel connects PicoClaw pods to a backend WebSocket server, enabling real-time bidirectional communication for multi-tenant Kubernetes pod architectures. Unlike other channels that receive inbound webhooks or poll APIs, this channel acts as a **client** that connects outward to your backend.
 
+For the dedicated backend-driven skill install flow, see [`skill-install.md`](./skill-install.md).
+
 ## Architecture
 
 ```
@@ -86,10 +88,13 @@ The `HOSTNAME` environment variable is automatically set by Kubernetes to the po
 
 ### Message Types
 
-| Type | Description |
-|------|-------------|
-| `"message"` | A regular user message. Goes through allow-list checks, triggers the LLM, and sends a response back to the backend. |
-| `"context"` | A context-only message. Bypasses allow-list, triggers no LLM call, and sends no response. Content is injected into the agent's session history for use in future conversations. |
+| Type | Direction | Description |
+|------|-----------|-------------|
+| `"message"` | Backend → PicoClaw | A regular user message. Goes through allow-list checks, triggers the LLM, and sends a response back to the backend. |
+| `"context"` | Backend → PicoClaw | A context-only message. Bypasses allow-list, triggers no LLM call, and sends no response. Content is injected into the agent's session history for use in future conversations. |
+| `"command"` | Backend → PicoClaw | A pod-level operation (e.g. skill install). Bypasses LLM and bus. Produces lifecycle events. Requires `commands.enabled=true`. |
+| `"response"` | PicoClaw → Backend | LLM response to a user message. |
+| `"event"` | PicoClaw → Backend | Lifecycle event from a command execution. |
 
 ### Inbound — Regular Message (Backend → PicoClaw)
 
@@ -192,6 +197,163 @@ Context messages inject backend events into the agent's session history without 
 
 Token counts are **aggregated across all LLM iterations** within a single user turn. A turn that requires multiple tool calls (and therefore multiple LLM calls) reports the total tokens for the entire turn, not per-call.
 
+### Inbound — Command Message (Backend → PicoClaw)
+
+Command messages trigger pod-level operations (e.g. skill installation) without involving the LLM. Commands are processed by dedicated handlers and produce lifecycle events back to the backend.
+
+Commands are **disabled by default** and must be explicitly enabled via configuration.
+
+```json
+{
+  "type": "command",
+  "content": "{\"request_id\":\"req-abc-123\",\"slug\":\"docker-compose\",\"registry\":\"clawhub\",\"version\":\"1.2.0\",\"force\":false,\"timeout_sec\":60}",
+  "metadata": {
+    "command_name": "skill.install"
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `type` | Must be `"command"` |
+| `content` | JSON-encoded command payload (see below) |
+| `metadata.command_name` | Command to execute. Currently supported: `"skill.install"` |
+| `metadata.request_id` | Fallback for `request_id` if not present in the JSON payload |
+
+**`skill.install` payload fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `request_id` | string | yes | Idempotency key. Duplicate requests with the same ID are deduplicated |
+| `slug` | string | yes | Skill identifier (e.g. `"docker-compose"`). Must not contain `/`, `\`, or `..` |
+| `registry` | string | conditional | Registry name (e.g. `"clawhub"`). Required unless `default_registry` is configured |
+| `version` | string | no | Specific version to install. Defaults to latest |
+| `force` | bool | no | Force reinstall if already installed (default: `false`) |
+| `timeout_sec` | int | no | Per-request timeout. Clamped to server-configured maximum |
+
+**Behavior:**
+
+- Commands bypass the LLM, allow-list, typing indicators, and message bus entirely
+- Each command runs asynchronously in a bounded worker pool (`max_concurrent`)
+- Duplicate `request_id` while a previous install is still running returns `accepted` with `already_in_progress=true`
+- Duplicate `request_id` after completion (within `dedup_ttl_sec`) replays the terminal event with `replayed=true`
+- If commands are disabled, the pod responds with `error_code: "commands_disabled"`
+
+### Outbound — Command Events (PicoClaw → Backend)
+
+Command lifecycle events use `type: "event"` and carry structured metadata:
+
+```json
+{
+  "type": "event",
+  "content": "skill install request accepted",
+  "metadata": {
+    "pod_hostname": "picoclaw-user-123",
+    "timestamp": "2026-03-06T14:00:00Z",
+    "event_name": "skill.install.accepted",
+    "request_id": "req-abc-123",
+    "slug": "docker-compose",
+    "registry": "clawhub"
+  }
+}
+```
+
+**Lifecycle event sequence (happy path):**
+
+```
+skill.install.accepted  →  skill.install.started  →  skill.install.succeeded
+```
+
+**Lifecycle event sequence (failure):**
+
+```
+skill.install.accepted  →  skill.install.started  →  skill.install.failed
+```
+
+| Event Name | Description |
+|------------|-------------|
+| `skill.install.accepted` | Request validated and queued. May include `already_in_progress=true` for duplicate requests |
+| `skill.install.started` | Worker acquired; download/install has begun |
+| `skill.install.succeeded` | Skill installed successfully. Includes `duration_ms` |
+| `skill.install.failed` | Installation failed. Includes `error_code`, `duration_ms` |
+
+**Error codes:**
+
+| Code | Description |
+|------|-------------|
+| `commands_disabled` | Commands feature is not enabled on this pod |
+| `unsupported_command` | Unknown `command_name` |
+| `invalid_command_payload` | Malformed JSON, missing `request_id`, or missing `slug` |
+| `registry_required` | No registry specified and no `default_registry` configured |
+| `registry_not_allowed` | Registry not in `allowed_registries` list |
+| `invalid_slug` | Slug contains path traversal characters |
+| `invalid_registry` | Registry name contains path traversal characters |
+| `install_failed` | Download, extraction, or moderation check failed |
+| `request_canceled` | Context canceled before install could start |
+| `send_event_failed` | Failed to send the accepted event back to backend |
+
+**Common metadata fields on all events:**
+
+| Field | Description |
+|-------|-------------|
+| `pod_hostname` | Pod that processed this command |
+| `timestamp` | RFC3339 timestamp |
+| `event_name` | One of the lifecycle event names above |
+| `request_id` | Idempotency key from the original command |
+| `slug` | Skill slug |
+| `registry` | Registry name |
+| `duration_ms` | Total elapsed time (present on `succeeded` and `failed`) |
+
+## Commands Configuration
+
+### config.json
+
+```json
+{
+  "channels": {
+    "websocket_client": {
+      "enabled": true,
+      "backend_url": "wss://your-backend.com/ws",
+      "commands": {
+        "enabled": true,
+        "max_concurrent": 1,
+        "install_timeout_sec": 120,
+        "dedup_ttl_sec": 300,
+        "allowed_registries": ["clawhub"],
+        "default_registry": "clawhub"
+      }
+    }
+  }
+}
+```
+
+### Commands Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `PICOCLAW_CHANNELS_WEBSOCKETCLIENT_COMMANDS_ENABLED` | Enable command processing (default: `false`) |
+| `PICOCLAW_CHANNELS_WEBSOCKETCLIENT_COMMANDS_MAX_CONCURRENT` | Max parallel installs per pod (default: `1`) |
+| `PICOCLAW_CHANNELS_WEBSOCKETCLIENT_COMMANDS_INSTALL_TIMEOUT_SEC` | Per-install timeout in seconds (default: `120`) |
+| `PICOCLAW_CHANNELS_WEBSOCKETCLIENT_COMMANDS_DEDUP_TTL_SEC` | How long to cache completed results for replay (default: `300`) |
+| `PICOCLAW_CHANNELS_WEBSOCKETCLIENT_COMMANDS_DEFAULT_REGISTRY` | Registry to use when command omits `registry` field |
+
+### Commands Config Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `enabled` | bool | no | Enable command processing. Default `false` (safe rollout) |
+| `max_concurrent` | int | no | Maximum concurrent skill installs per pod (default: 1) |
+| `install_timeout_sec` | int | no | Maximum seconds per install operation (default: 120) |
+| `dedup_ttl_sec` | int | no | Seconds to retain completed results for idempotent replay (default: 300) |
+| `allowed_registries` | array | no | If non-empty, only these registries are permitted. Empty = allow all configured registries |
+| `default_registry` | string | no | Registry used when the command payload omits `registry` |
+
+### Design Notes
+
+- Commands use a separate code path from LLM-driven skill installation. Both paths reuse the same underlying install logic (validation, download, extraction, moderation) but have independent concurrency controls.
+- The bounded worker pool (`max_concurrent`) prevents resource exhaustion on low-spec K8s pods.
+- The dedup cache is in-memory per pod. If a pod restarts, the cache is lost and the backend should retry with a new `request_id` or the same one (which will re-execute since the cache is empty).
+
 ## Connection Lifecycle
 
 ### Startup
@@ -244,7 +406,7 @@ Designed for minimal resource footprint:
 
 | Resource | Per Pod |
 |----------|---------|
-| Goroutines | 3 (readLoop, pingLoop, reconnectLoop) |
+| Goroutines | 3 base (readLoop, pingLoop, reconnectLoop) + up to `max_concurrent` command workers |
 | Memory | ~10–20 KB per connection |
 | CPU | Near-zero when idle (event-driven reads) |
 | WS buffers | 1 KB read + 1 KB write |

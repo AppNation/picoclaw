@@ -407,6 +407,16 @@ type WebSocketClientConfig struct {
 	ReconnectDelay int                 `json:"reconnect_delay" env:"PICOCLAW_CHANNELS_WEBSOCKETCLIENT_RECONNECT_DELAY"`
 	PingInterval   int                 `json:"ping_interval"   env:"PICOCLAW_CHANNELS_WEBSOCKETCLIENT_PING_INTERVAL"`
 	AllowFrom      FlexibleStringSlice `json:"allow_from"      env:"PICOCLAW_CHANNELS_WEBSOCKETCLIENT_ALLOW_FROM"`
+	Commands       WSCommandsConfig    `json:"commands,omitempty"`
+}
+
+type WSCommandsConfig struct {
+	Enabled           bool     `json:"enabled"             env:"PICOCLAW_CHANNELS_WEBSOCKETCLIENT_COMMANDS_ENABLED"`
+	MaxConcurrent     int      `json:"max_concurrent"      env:"PICOCLAW_CHANNELS_WEBSOCKETCLIENT_COMMANDS_MAX_CONCURRENT"`
+	InstallTimeout    int      `json:"install_timeout_sec" env:"PICOCLAW_CHANNELS_WEBSOCKETCLIENT_COMMANDS_INSTALL_TIMEOUT_SEC"`
+	DedupTTL          int      `json:"dedup_ttl_sec"       env:"PICOCLAW_CHANNELS_WEBSOCKETCLIENT_COMMANDS_DEDUP_TTL_SEC"`
+	AllowedRegistries []string `json:"allowed_registries,omitempty"`
+	DefaultRegistry   string   `json:"default_registry,omitempty" env:"PICOCLAW_CHANNELS_WEBSOCKETCLIENT_COMMANDS_DEFAULT_REGISTRY"`
 }
 
 type HeartbeatConfig struct {

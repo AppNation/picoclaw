@@ -163,6 +163,12 @@ func DefaultConfig() *Config {
 				ReconnectDelay: 5,
 				PingInterval:   30,
 				AllowFrom:      FlexibleStringSlice{},
+				Commands: WSCommandsConfig{
+					Enabled:        false,
+					MaxConcurrent:  1,
+					InstallTimeout: 120,
+					DedupTTL:       300,
+				},
 			},
 		},
 		Providers: ProvidersConfig{
