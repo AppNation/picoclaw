@@ -373,5 +373,6 @@ func (t *SubagentTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		Silent:  false,
 		IsError: false,
 		Async:   false,
+		Usage:   loopResult.Usage,
 	}
 }

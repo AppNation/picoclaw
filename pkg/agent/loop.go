@@ -274,39 +274,18 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				}
 
 				if response != "" {
-					// Check if the message tool already sent a response during this round.
-					// If so, skip publishing to avoid duplicate messages to the user.
-					// Use default agent's tools to check (message tool is shared).
-					alreadySent := false
-					defaultAgent := al.registry.GetDefaultAgent()
-					if defaultAgent != nil {
-						if tool, ok := defaultAgent.Tools.Get("message"); ok {
-							if mt, ok := tool.(*tools.MessageTool); ok {
-								alreadySent = mt.HasSentInRound()
-							}
-						}
-					}
-	
-					if !alreadySent {
-						al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-							Channel:  msg.Channel,
-							ChatID:   msg.ChatID,
-							Content:  response,
-							Metadata: usageToMetadata(usage),
+					al.bus.PublishOutbound(ctx, bus.OutboundMessage{
+						Channel:  msg.Channel,
+						ChatID:   msg.ChatID,
+						Content:  response,
+						Metadata: usageToMetadata(usage),
+					})
+					logger.InfoCF("agent", "Published outbound response",
+						map[string]any{
+							"channel":     msg.Channel,
+							"chat_id":     msg.ChatID,
+							"content_len": len(response),
 						})
-						logger.InfoCF("agent", "Published outbound response",
-							map[string]any{
-								"channel":     msg.Channel,
-								"chat_id":     msg.ChatID,
-								"content_len": len(response),
-							})
-					} else {
-						logger.DebugCF(
-							"agent",
-							"Skipped outbound (message tool already sent)",
-							map[string]any{"channel": msg.Channel},
-						)
-					}
 				}
 			}()
 		}
@@ -403,8 +382,22 @@ func (al *AgentLoop) ProcessDirectWithChannel(
 		SessionKey: sessionKey,
 	}
 
-	response, _, err := al.processMessage(ctx, msg)
-	return response, err
+	response, usage, err := al.processMessage(ctx, msg)
+	if err != nil {
+		return response, err
+	}
+
+	// Publish the response with accumulated usage metadata.
+	// processMessage does not publish for direct/cron callers — only the run() bus loop does.
+	if response != "" {
+		al.bus.PublishOutbound(ctx, bus.OutboundMessage{
+			Channel:  channel,
+			ChatID:   chatID,
+			Content:  response,
+			Metadata: usageToMetadata(usage),
+		})
+	}
+	return response, nil
 }
 
 // ProcessHeartbeat processes a heartbeat request without session history.
@@ -686,7 +679,8 @@ func (al *AgentLoop) runAgentLoop(
 	// 4. Run LLM iteration loop
 	finalContent, iteration, usage, err := al.runLLMIteration(ctx, agent, messages, opts)
 	if err != nil {
-		return "", nil, err
+		// Return partial usage accumulated before the error so callers can track cost.
+		return "", usage, err
 	}
 
 	// If last tool had ForUser content and we already sent it, we might not need to send final response
@@ -950,7 +944,13 @@ func (al *AgentLoop) runLLMIteration(
 					"iteration": iteration,
 					"error":     err.Error(),
 				})
-			return "", iteration, nil, fmt.Errorf("LLM call failed after retries: %w", err)
+			// Return accumulated usage from earlier iterations even on error,
+			// so the backend can track partial cost for this turn.
+			var usagePtr *providers.UsageInfo
+			if hasUsage {
+				usagePtr = &totalUsage
+			}
+			return "", iteration, usagePtr, fmt.Errorf("LLM call failed after retries: %w", err)
 		}
 
 		// Accumulate token usage across all iterations for this turn.
@@ -1076,6 +1076,14 @@ func (al *AgentLoop) runLLMIteration(
 				opts.ChatID,
 				asyncCallback,
 			)
+
+			// Accumulate token usage from nested LLM calls (e.g., subagent tool).
+			if toolResult.Usage != nil {
+				totalUsage.PromptTokens += toolResult.Usage.PromptTokens
+				totalUsage.CompletionTokens += toolResult.Usage.CompletionTokens
+				totalUsage.TotalTokens += toolResult.Usage.TotalTokens
+				hasUsage = true
+			}
 
 			// Send ForUser content to user immediately if not Silent
 			if !toolResult.Silent && toolResult.ForUser != "" && opts.SendResponse {

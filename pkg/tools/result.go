@@ -1,6 +1,10 @@
 package tools
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/sipeed/picoclaw/pkg/providers"
+)
 
 // ToolResult represents the structured return value from tool execution.
 // It provides clear semantics for different types of results and supports
@@ -34,6 +38,10 @@ type ToolResult struct {
 	// Media contains media store refs produced by this tool.
 	// When non-empty, the agent will publish these as OutboundMediaMessage.
 	Media []string `json:"media,omitempty"`
+
+	// Usage contains token usage from nested LLM calls (e.g., subagent tool).
+	// When set, the parent agent loop accumulates this into the turn's total usage.
+	Usage *providers.UsageInfo `json:"-"`
 }
 
 // NewToolResult creates a basic ToolResult with content for the LLM.
