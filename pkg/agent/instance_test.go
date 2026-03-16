@@ -15,6 +15,7 @@ func TestNewAgentInstance_UsesDefaultsTemperatureAndMaxTokens(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	cfg := &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,
@@ -47,6 +48,7 @@ func TestNewAgentInstance_DefaultsTemperatureWhenZero(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	cfg := &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,
@@ -76,6 +78,7 @@ func TestNewAgentInstance_DefaultsTemperatureWhenUnset(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	cfg := &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,

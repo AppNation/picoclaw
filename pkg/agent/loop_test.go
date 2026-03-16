@@ -39,6 +39,7 @@ func newTestAgentLoop(
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	cfg = &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,
@@ -98,6 +99,7 @@ func TestNewAgentLoop_StateInitialized(t *testing.T) {
 
 	// Create test config
 	cfg := &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,
@@ -134,6 +136,7 @@ func TestToolRegistry_ToolRegistration(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	cfg := &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,
@@ -174,6 +177,7 @@ func TestToolContext_Updates(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	cfg := &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,
@@ -205,6 +209,7 @@ func TestToolRegistry_GetDefinitions(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	cfg := &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,
@@ -243,6 +248,7 @@ func TestAgentLoop_GetStartupInfo(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	cfg := &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,
@@ -290,6 +296,7 @@ func TestAgentLoop_Stop(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	cfg := &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,
@@ -418,6 +425,7 @@ func TestToolResult_SilentToolDoesNotSendUserMessage(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	cfg := &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,
@@ -460,6 +468,7 @@ func TestToolResult_UserFacingToolDoesSendMessage(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	cfg := &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,
@@ -531,6 +540,7 @@ func TestAgentLoop_ContextExhaustionRetry(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	cfg := &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,
@@ -612,6 +622,7 @@ func TestTargetReasoningChannelID_AllChannels(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	cfg := &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,

@@ -17,6 +17,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 var upgrader = websocket.Upgrader{
@@ -1158,3 +1159,176 @@ func TestSendMessage_WithUsageMetadata(t *testing.T) {
 
 // Re-export for test assertions
 var ErrNotRunning = channels.ErrNotRunning
+
+// ---------------------------------------------------------------------------
+// LLM Gate reset_at integration tests
+// ---------------------------------------------------------------------------
+
+// startTestChannelWithGate creates a WS server, channel with an LLMGate, starts
+// the channel, and returns the server-side connection for sending messages.
+func startTestChannelWithGate(t *testing.T, gate *providers.LLMGate) (
+	serverConn *websocket.Conn,
+	ch *WebSocketClientChannel,
+	cancel context.CancelFunc,
+	cleanup func(),
+) {
+	t.Helper()
+	serverReady := make(chan *websocket.Conn, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		serverReady <- conn
+	}))
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	msgBus := bus.NewMessageBus()
+
+	cfg := config.WebSocketClientConfig{
+		Enabled:        true,
+		BackendURL:     wsURL,
+		ReconnectDelay: 1,
+		PingInterval:   30,
+	}
+
+	var err error
+	ch, err = NewWebSocketClientChannel(cfg, msgBus)
+	require.NoError(t, err)
+	ch.SetLLMGate(gate)
+
+	ctx, cancelFn := context.WithCancel(context.Background())
+	err = ch.Start(ctx)
+	require.NoError(t, err)
+
+	select {
+	case serverConn = <-serverReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Server did not receive connection")
+	}
+
+	return serverConn, ch, cancelFn, func() {
+		_ = ch.Stop(ctx)
+		cancelFn()
+		serverConn.Close()
+		server.Close()
+		msgBus.Close()
+		gate.Stop()
+	}
+}
+
+func sendJSON(t *testing.T, conn *websocket.Conn, v any) {
+	t.Helper()
+	data, err := json.Marshal(v)
+	require.NoError(t, err)
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, data))
+}
+
+func TestLLMGate_DisableWithResetAt(t *testing.T) {
+	t.Parallel()
+	gate := providers.NewLLMGate(true)
+	serverConn, _, _, cleanup := startTestChannelWithGate(t, gate)
+	defer cleanup()
+
+	resetAt := time.Now().Add(200 * time.Millisecond).UTC().Format(time.RFC3339Nano)
+	sendJSON(t, serverConn, map[string]string{
+		"type":     "llm_disable",
+		"reset_at": resetAt,
+	})
+
+	// Give readLoop time to process.
+	time.Sleep(50 * time.Millisecond)
+	assert.False(t, gate.IsEnabled(), "gate should be disabled after llm_disable")
+
+	// Wait for the reset timer to fire.
+	time.Sleep(300 * time.Millisecond)
+	assert.True(t, gate.IsEnabled(), "gate should be re-enabled after reset_at elapsed")
+}
+
+func TestLLMGate_DisableWithoutResetAt(t *testing.T) {
+	t.Parallel()
+	gate := providers.NewLLMGate(true)
+	serverConn, _, _, cleanup := startTestChannelWithGate(t, gate)
+	defer cleanup()
+
+	sendJSON(t, serverConn, map[string]string{
+		"type": "llm_disable",
+	})
+
+	time.Sleep(50 * time.Millisecond)
+	assert.False(t, gate.IsEnabled(), "gate should be disabled")
+
+	// Verify it stays disabled.
+	time.Sleep(200 * time.Millisecond)
+	assert.False(t, gate.IsEnabled(), "gate should remain disabled without reset_at")
+}
+
+func TestLLMGate_DisableWithInvalidResetAt(t *testing.T) {
+	t.Parallel()
+	gate := providers.NewLLMGate(true)
+	serverConn, _, _, cleanup := startTestChannelWithGate(t, gate)
+	defer cleanup()
+
+	sendJSON(t, serverConn, map[string]string{
+		"type":     "llm_disable",
+		"reset_at": "not-a-date",
+	})
+
+	time.Sleep(50 * time.Millisecond)
+	assert.False(t, gate.IsEnabled(), "gate should be disabled even with invalid reset_at")
+
+	// Stays disabled indefinitely (no timer).
+	time.Sleep(200 * time.Millisecond)
+	assert.False(t, gate.IsEnabled(), "gate should remain disabled with invalid reset_at")
+}
+
+func TestLLMGate_EnableCancelsResetTimer(t *testing.T) {
+	t.Parallel()
+	gate := providers.NewLLMGate(true)
+	serverConn, _, _, cleanup := startTestChannelWithGate(t, gate)
+	defer cleanup()
+
+	// Disable with a future reset_at.
+	resetAt := time.Now().Add(500 * time.Millisecond).UTC().Format(time.RFC3339Nano)
+	sendJSON(t, serverConn, map[string]string{
+		"type":     "llm_disable",
+		"reset_at": resetAt,
+	})
+
+	time.Sleep(50 * time.Millisecond)
+	assert.False(t, gate.IsEnabled(), "gate should be disabled")
+
+	// Now send llm_enable — should cancel the timer.
+	sendJSON(t, serverConn, map[string]string{
+		"type": "llm_enable",
+	})
+
+	time.Sleep(50 * time.Millisecond)
+	assert.True(t, gate.IsEnabled(), "gate should be enabled after llm_enable")
+
+	// Disable again without a timer to check that the old timer doesn't fire.
+	gate.SetEnabled(false)
+
+	// Wait past the original reset_at.
+	time.Sleep(600 * time.Millisecond)
+	assert.False(t, gate.IsEnabled(), "cancelled timer should not have re-enabled the gate")
+}
+
+func TestLLMGate_DisableWithPastResetAt(t *testing.T) {
+	t.Parallel()
+	gate := providers.NewLLMGate(true)
+	serverConn, _, _, cleanup := startTestChannelWithGate(t, gate)
+	defer cleanup()
+
+	// Send reset_at that is already in the past (simulates pod reconnect after reset window).
+	pastTime := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+	sendJSON(t, serverConn, map[string]string{
+		"type":     "llm_disable",
+		"reset_at": pastTime,
+	})
+
+	// DisableUntil with past time should re-enable immediately.
+	time.Sleep(50 * time.Millisecond)
+	assert.True(t, gate.IsEnabled(), "gate should be re-enabled immediately when reset_at is in the past")
+}

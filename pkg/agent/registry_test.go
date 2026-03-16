@@ -26,6 +26,7 @@ func (m *mockRegistryProvider) GetDefaultModel() string {
 
 func testCfg(agents []config.AgentConfig) *config.Config {
 	return &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         "/tmp/picoclaw-test-registry",

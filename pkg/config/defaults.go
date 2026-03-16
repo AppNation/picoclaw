@@ -24,6 +24,7 @@ func DefaultConfig() *Config {
 	workspacePath := filepath.Join(homePath, "workspace")
 
 	return &Config{
+		LLMEnabled: true,
 		Agents: AgentsConfig{
 			Defaults: AgentDefaults{
 				Workspace:           workspacePath,

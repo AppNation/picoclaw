@@ -18,6 +18,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/skills"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
@@ -45,6 +46,7 @@ type InboundWSMessage struct {
 	SenderID string            `json:"sender_id"`
 	Content  string            `json:"content"`
 	Metadata map[string]string `json:"metadata,omitempty"`
+	ResetAt  string            `json:"reset_at,omitempty"` // RFC3339; used with llm_disable for auto-re-enable
 }
 
 // OutboundWSMessage is the JSON message from PicoClaw to backend.
@@ -67,7 +69,12 @@ type WebSocketClientChannel struct {
 	cancel         context.CancelFunc
 	hostname       string
 	commandHandler *skillInstallCommandHandler
+	gate           *providers.LLMGate
 }
+
+// SetLLMGate injects the shared LLMGate so the readLoop can toggle it on
+// backend llm_disable / llm_enable messages.
+func (c *WebSocketClientChannel) SetLLMGate(g *providers.LLMGate) { c.gate = g }
 
 // NewWebSocketClientChannel creates a new WebSocket client channel.
 func NewWebSocketClientChannel(
@@ -392,6 +399,36 @@ func (c *WebSocketClientChannel) readLoop() {
 					"error": err.Error(),
 				})
 			}
+			continue
+		}
+
+		if inMsg.Type == "llm_disable" {
+			if c.gate != nil {
+				var resetAt time.Time
+				if inMsg.ResetAt != "" {
+					if t, err := time.Parse(time.RFC3339, inMsg.ResetAt); err == nil {
+						resetAt = t
+					} else {
+						logger.WarnCF(channelName, "Invalid reset_at in llm_disable, disabling indefinitely", map[string]any{
+							"reset_at": inMsg.ResetAt,
+							"error":    err.Error(),
+						})
+					}
+				}
+				c.gate.DisableUntil(resetAt)
+			}
+			logFields := map[string]any{}
+			if inMsg.ResetAt != "" {
+				logFields["reset_at"] = inMsg.ResetAt
+			}
+			logger.InfoCF(channelName, "LLM calls disabled by backend", logFields)
+			continue
+		}
+		if inMsg.Type == "llm_enable" {
+			if c.gate != nil {
+				c.gate.SetEnabled(true)
+			}
+			logger.InfoC(channelName, "LLM calls enabled by backend")
 			continue
 		}
 

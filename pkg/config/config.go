@@ -48,16 +48,17 @@ func (f *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
 }
 
 type Config struct {
-	Agents    AgentsConfig    `json:"agents"`
-	Bindings  []AgentBinding  `json:"bindings,omitempty"`
-	Session   SessionConfig   `json:"session,omitempty"`
-	Channels  ChannelsConfig  `json:"channels"`
-	Providers ProvidersConfig `json:"providers,omitempty"`
-	ModelList []ModelConfig   `json:"model_list"` // New model-centric provider configuration
-	Gateway   GatewayConfig   `json:"gateway"`
-	Tools     ToolsConfig     `json:"tools"`
-	Heartbeat HeartbeatConfig `json:"heartbeat"`
-	Devices   DevicesConfig   `json:"devices"`
+	LLMEnabled bool            `json:"llm_enabled" env:"PICOCLAW_LLM_ENABLED"`
+	Agents     AgentsConfig    `json:"agents"`
+	Bindings   []AgentBinding  `json:"bindings,omitempty"`
+	Session    SessionConfig   `json:"session,omitempty"`
+	Channels   ChannelsConfig  `json:"channels"`
+	Providers  ProvidersConfig `json:"providers,omitempty"`
+	ModelList  []ModelConfig   `json:"model_list"` // New model-centric provider configuration
+	Gateway    GatewayConfig   `json:"gateway"`
+	Tools      ToolsConfig     `json:"tools"`
+	Heartbeat  HeartbeatConfig `json:"heartbeat"`
+	Devices    DevicesConfig   `json:"devices"`
 }
 
 // MarshalJSON implements custom JSON marshaling for Config

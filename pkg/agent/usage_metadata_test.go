@@ -40,6 +40,7 @@ func newUsageTestAgentLoop(t *testing.T, provider providers.LLMProvider) (*Agent
 		t.Fatalf("os.MkdirTemp: %v", err)
 	}
 	cfg := &config.Config{
+		LLMEnabled: true,
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
 				Workspace:         tmpDir,

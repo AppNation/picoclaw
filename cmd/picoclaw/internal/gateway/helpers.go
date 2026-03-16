@@ -21,7 +21,7 @@ import (
 	_ "github.com/sipeed/picoclaw/pkg/channels/onebot"
 	_ "github.com/sipeed/picoclaw/pkg/channels/pico"
 	_ "github.com/sipeed/picoclaw/pkg/channels/qq"
-	_ "github.com/sipeed/picoclaw/pkg/channels/websocket_client"
+	"github.com/sipeed/picoclaw/pkg/channels/websocket_client"
 	_ "github.com/sipeed/picoclaw/pkg/channels/slack"
 	_ "github.com/sipeed/picoclaw/pkg/channels/telegram"
 	_ "github.com/sipeed/picoclaw/pkg/channels/wecom"
@@ -134,6 +134,13 @@ func gatewayCmd(debug bool) error {
 	// Inject channel manager and media store into agent loop
 	agentLoop.SetChannelManager(channelManager)
 	agentLoop.SetMediaStore(mediaStore)
+
+	// Pass the LLM gate to the WebSocket channel so the backend can toggle it.
+	if ch, ok := channelManager.GetChannel("websocket_client"); ok {
+		if ws, ok := ch.(*websocket_client.WebSocketClientChannel); ok {
+			ws.SetLLMGate(agentLoop.LLMGate())
+		}
+	}
 
 	enabledChannels := channelManager.GetEnabledChannels()
 	if len(enabledChannels) > 0 {

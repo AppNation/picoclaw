@@ -43,6 +43,7 @@ type AgentLoop struct {
 	fallback       *providers.FallbackChain
 	channelManager *channels.Manager
 	mediaStore     media.MediaStore
+	gate           *providers.LLMGate
 }
 
 // processOptions configures how a message is processed
@@ -65,8 +66,12 @@ func NewAgentLoop(
 	msgBus *bus.MessageBus,
 	provider providers.LLMProvider,
 ) *AgentLoop {
-	// Wrap provider so every Chat() call reports token usage via the bus.
-	tracked := providers.NewUsageTrackingProvider(provider, msgBus)
+	// Provider chain: raw -> gate -> tracking -> consumers.
+	// The gate sits first so a disabled gate prevents both token consumption
+	// and usage reporting.
+	gate := providers.NewLLMGate(cfg.LLMEnabled)
+	gated := providers.NewLLMGateProvider(provider, gate)
+	tracked := providers.NewUsageTrackingProvider(gated, msgBus)
 
 	registry := NewAgentRegistry(cfg, tracked)
 
@@ -91,6 +96,7 @@ func NewAgentLoop(
 		state:       stateManager,
 		summarizing: sync.Map{},
 		fallback:    fallbackChain,
+		gate:        gate,
 	}
 }
 
@@ -316,6 +322,10 @@ func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 func (al *AgentLoop) SetMediaStore(s media.MediaStore) {
 	al.mediaStore = s
 }
+
+// LLMGate returns the shared gate so callers (e.g. WebSocket channel) can
+// toggle LLM access at runtime.
+func (al *AgentLoop) LLMGate() *providers.LLMGate { return al.gate }
 
 // inferMediaType determines the media type ("image", "audio", "video", "file")
 // from a filename and MIME content type.
