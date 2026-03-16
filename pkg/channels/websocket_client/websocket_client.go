@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -260,6 +261,27 @@ func (c *WebSocketClientChannel) sendEvent(ctx context.Context, eventName string
 		Type:     "event",
 		Content:  content,
 		Metadata: outMeta,
+	})
+}
+
+// SendTokenUsage sends a token_usage message to the backend for cost tracking.
+// Implements channels.TokenUsageSender.
+func (c *WebSocketClientChannel) SendTokenUsage(ctx context.Context, msg bus.TokenUsageMessage) error {
+	if !c.IsRunning() {
+		return channels.ErrNotRunning
+	}
+
+	return c.sendWSMessage(ctx, OutboundWSMessage{
+		Type:   "token_usage",
+		ChatID: msg.ChatID,
+		Metadata: map[string]string{
+			"model":             msg.Model,
+			"prompt_tokens":     strconv.Itoa(msg.PromptTokens),
+			"completion_tokens": strconv.Itoa(msg.CompletionTokens),
+			"total_tokens":      strconv.Itoa(msg.TotalTokens),
+			"pod_hostname":      c.hostname,
+			"timestamp":         time.Now().UTC().Format(time.RFC3339),
+		},
 	})
 }
 

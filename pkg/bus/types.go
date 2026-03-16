@@ -52,3 +52,14 @@ type OutboundMediaMessage struct {
 	ChatID  string      `json:"chat_id"`
 	Parts   []MediaPart `json:"parts"`
 }
+
+// TokenUsageMessage reports token usage for a single LLM call.
+// Published by the UsageTrackingProvider after every Chat() invocation.
+type TokenUsageMessage struct {
+	Channel          string `json:"channel"`
+	ChatID           string `json:"chat_id"`
+	Model            string `json:"model"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
+	TotalTokens      int    `json:"total_tokens"`
+}

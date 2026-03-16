@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -66,10 +65,13 @@ func NewAgentLoop(
 	msgBus *bus.MessageBus,
 	provider providers.LLMProvider,
 ) *AgentLoop {
-	registry := NewAgentRegistry(cfg, provider)
+	// Wrap provider so every Chat() call reports token usage via the bus.
+	tracked := providers.NewUsageTrackingProvider(provider, msgBus)
+
+	registry := NewAgentRegistry(cfg, tracked)
 
 	// Register shared tools to all agents
-	registerSharedTools(cfg, msgBus, registry, provider)
+	registerSharedTools(cfg, msgBus, registry, tracked)
 
 	// Set up shared fallback chain
 	cooldown := providers.NewCooldownTracker()
@@ -268,17 +270,17 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				// 	}
 				// }()
 
-				response, usage, err := al.processMessage(ctx, msg)
+				trackCtx := providers.WithLLMTrackingContext(ctx, msg.ChatID, msg.Channel)
+				response, err := al.processMessage(trackCtx, msg)
 				if err != nil {
 					response = fmt.Sprintf("Error processing message: %v", err)
 				}
 
 				if response != "" {
 					al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-						Channel:  msg.Channel,
-						ChatID:   msg.ChatID,
-						Content:  response,
-						Metadata: usageToMetadata(usage),
+						Channel: msg.Channel,
+						ChatID:  msg.ChatID,
+						Content: response,
 					})
 					logger.InfoCF("agent", "Published outbound response",
 						map[string]any{
@@ -374,6 +376,8 @@ func (al *AgentLoop) ProcessDirectWithChannel(
 	ctx context.Context,
 	content, sessionKey, channel, chatID string,
 ) (string, error) {
+	trackCtx := providers.WithLLMTrackingContext(ctx, chatID, channel)
+
 	msg := bus.InboundMessage{
 		Channel:    channel,
 		SenderID:   "cron",
@@ -382,19 +386,16 @@ func (al *AgentLoop) ProcessDirectWithChannel(
 		SessionKey: sessionKey,
 	}
 
-	response, usage, err := al.processMessage(ctx, msg)
+	response, err := al.processMessage(trackCtx, msg)
 	if err != nil {
 		return response, err
 	}
 
-	// Publish the response with accumulated usage metadata.
-	// processMessage does not publish for direct/cron callers — only the run() bus loop does.
 	if response != "" {
 		al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-			Channel:  channel,
-			ChatID:   chatID,
-			Content:  response,
-			Metadata: usageToMetadata(usage),
+			Channel: channel,
+			ChatID:  chatID,
+			Content: response,
 		})
 	}
 	return response, nil
@@ -406,11 +407,13 @@ func (al *AgentLoop) ProcessHeartbeat(
 	ctx context.Context,
 	content, channel, chatID string,
 ) (string, error) {
+	trackCtx := providers.WithLLMTrackingContext(ctx, chatID, channel)
+
 	agent := al.registry.GetDefaultAgent()
 	if agent == nil {
 		return "", fmt.Errorf("no default agent for heartbeat")
 	}
-	response, _, err := al.runAgentLoop(ctx, agent, processOptions{
+	response, err := al.runAgentLoop(trackCtx, agent, processOptions{
 		SessionKey:      "heartbeat",
 		Channel:         channel,
 		ChatID:          chatID,
@@ -418,12 +421,12 @@ func (al *AgentLoop) ProcessHeartbeat(
 		DefaultResponse: defaultResponse,
 		EnableSummary:   false,
 		SendResponse:    false,
-		NoHistory:       true, // Don't load session history for heartbeat
+		NoHistory:       true,
 	})
 	return response, err
 }
 
-func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (string, *providers.UsageInfo, error) {
+func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {
 	// Add message preview to log (show full content for error messages)
 	var logContent string
 	if strings.Contains(msg.Content, "Error:") || strings.Contains(msg.Content, "error") {
@@ -444,19 +447,17 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 
 	// Context-only messages inject into session history without triggering the LLM.
 	if msg.ContextOnly {
-		resp, err := al.handleContextInjection(ctx, msg)
-		return resp, nil, err
+		return al.handleContextInjection(ctx, msg)
 	}
 
 	// Route system messages to processSystemMessage
 	if msg.Channel == "system" {
-		resp, err := al.processSystemMessage(ctx, msg)
-		return resp, nil, err
+		return al.processSystemMessage(ctx, msg)
 	}
 
 	// Check for commands
 	if response, handled := al.handleCommand(ctx, msg); handled {
-		return response, nil, nil
+		return response, nil
 	}
 
 	// Route to determine agent and session key
@@ -474,7 +475,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		agent = al.registry.GetDefaultAgent()
 	}
 	if agent == nil {
-		return "", nil, fmt.Errorf("no agent available for route (agent_id=%s)", route.AgentID)
+		return "", fmt.Errorf("no agent available for route (agent_id=%s)", route.AgentID)
 	}
 
 	// Reset message-tool state for this round so we don't skip publishing due to a previous round.
@@ -509,18 +510,6 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	})
 }
 
-// usageToMetadata converts a UsageInfo to a string metadata map.
-// Returns nil when u is nil (providers that don't report usage).
-func usageToMetadata(u *providers.UsageInfo) map[string]string {
-	if u == nil {
-		return nil
-	}
-	return map[string]string{
-		"usage_prompt_tokens":     strconv.Itoa(u.PromptTokens),
-		"usage_completion_tokens": strconv.Itoa(u.CompletionTokens),
-		"usage_total_tokens":      strconv.Itoa(u.TotalTokens),
-	}
-}
 
 // handleContextInjection processes a context-only inbound message by injecting
 // its content into the agent's session history. No LLM call is made and no
@@ -617,7 +606,7 @@ func (al *AgentLoop) processSystemMessage(
 	// Use the origin session for context
 	sessionKey := routing.BuildAgentMainSessionKey(agent.ID)
 
-	response, _, err := al.runAgentLoop(ctx, agent, processOptions{
+	response, err := al.runAgentLoop(ctx, agent, processOptions{
 		SessionKey:      sessionKey,
 		Channel:         originChannel,
 		ChatID:          originChatID,
@@ -634,7 +623,7 @@ func (al *AgentLoop) runAgentLoop(
 	ctx context.Context,
 	agent *AgentInstance,
 	opts processOptions,
-) (string, *providers.UsageInfo, error) {
+) (string, error) {
 	// 0. Record last channel for heartbeat notifications (skip internal channels)
 	if opts.Channel != "" && opts.ChatID != "" {
 		// Don't record internal channels (cli, system, subagent)
@@ -677,14 +666,10 @@ func (al *AgentLoop) runAgentLoop(
 	agent.Sessions.AddMessage(opts.SessionKey, "user", opts.UserMessage)
 
 	// 4. Run LLM iteration loop
-	finalContent, iteration, usage, err := al.runLLMIteration(ctx, agent, messages, opts)
+	finalContent, iteration, err := al.runLLMIteration(ctx, agent, messages, opts)
 	if err != nil {
-		// Return partial usage accumulated before the error so callers can track cost.
-		return "", usage, err
+		return "", err
 	}
-
-	// If last tool had ForUser content and we already sent it, we might not need to send final response
-	// This is controlled by the tool's Silent flag and ForUser content
 
 	// 5. Handle empty response
 	if finalContent == "" {
@@ -695,18 +680,17 @@ func (al *AgentLoop) runAgentLoop(
 	agent.Sessions.AddMessage(opts.SessionKey, "assistant", finalContent)
 	agent.Sessions.Save(opts.SessionKey)
 
-	// 7. Optional: summarization
+	// 7. Optional: summarization (pass ctx so tracking context propagates to LLM calls)
 	if opts.EnableSummary {
-		al.maybeSummarize(agent, opts.SessionKey, opts.Channel, opts.ChatID)
+		al.maybeSummarize(ctx, agent, opts.SessionKey, opts.Channel, opts.ChatID)
 	}
 
 	// 8. Optional: send response via bus
 	if opts.SendResponse {
 		al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-			Channel:  opts.Channel,
-			ChatID:   opts.ChatID,
-			Content:  finalContent,
-			Metadata: usageToMetadata(usage),
+			Channel: opts.Channel,
+			ChatID:  opts.ChatID,
+			Content: finalContent,
 		})
 	}
 
@@ -720,7 +704,7 @@ func (al *AgentLoop) runAgentLoop(
 			"final_length": len(finalContent),
 		})
 
-	return finalContent, usage, nil
+	return finalContent, nil
 }
 
 func (al *AgentLoop) targetReasoningChannelID(channelName string) (chatID string) {
@@ -785,11 +769,9 @@ func (al *AgentLoop) runLLMIteration(
 	agent *AgentInstance,
 	messages []providers.Message,
 	opts processOptions,
-) (string, int, *providers.UsageInfo, error) {
+) (string, int, error) {
 	iteration := 0
 	var finalContent string
-	var totalUsage providers.UsageInfo
-	hasUsage := false
 
 	for iteration < agent.MaxIterations {
 		iteration++
@@ -944,21 +926,7 @@ func (al *AgentLoop) runLLMIteration(
 					"iteration": iteration,
 					"error":     err.Error(),
 				})
-			// Return accumulated usage from earlier iterations even on error,
-			// so the backend can track partial cost for this turn.
-			var usagePtr *providers.UsageInfo
-			if hasUsage {
-				usagePtr = &totalUsage
-			}
-			return "", iteration, usagePtr, fmt.Errorf("LLM call failed after retries: %w", err)
-		}
-
-		// Accumulate token usage across all iterations for this turn.
-		if response.Usage != nil {
-			totalUsage.PromptTokens += response.Usage.PromptTokens
-			totalUsage.CompletionTokens += response.Usage.CompletionTokens
-			totalUsage.TotalTokens += response.Usage.TotalTokens
-			hasUsage = true
+			return "", iteration, fmt.Errorf("LLM call failed after retries: %w", err)
 		}
 
 		go al.handleReasoning(
@@ -1077,14 +1045,6 @@ func (al *AgentLoop) runLLMIteration(
 				asyncCallback,
 			)
 
-			// Accumulate token usage from nested LLM calls (e.g., subagent tool).
-			if toolResult.Usage != nil {
-				totalUsage.PromptTokens += toolResult.Usage.PromptTokens
-				totalUsage.CompletionTokens += toolResult.Usage.CompletionTokens
-				totalUsage.TotalTokens += toolResult.Usage.TotalTokens
-				hasUsage = true
-			}
-
 			// Send ForUser content to user immediately if not Silent
 			if !toolResult.Silent && toolResult.ForUser != "" && opts.SendResponse {
 				al.bus.PublishOutbound(ctx, bus.OutboundMessage{
@@ -1139,11 +1099,7 @@ func (al *AgentLoop) runLLMIteration(
 		}
 	}
 
-	var usagePtr *providers.UsageInfo
-	if hasUsage {
-		usagePtr = &totalUsage
-	}
-	return finalContent, iteration, usagePtr, nil
+	return finalContent, iteration, nil
 }
 
 // updateToolContexts updates the context for tools that need channel/chatID info.
@@ -1167,7 +1123,7 @@ func (al *AgentLoop) updateToolContexts(agent *AgentInstance, channel, chatID st
 }
 
 // maybeSummarize triggers summarization if the session history exceeds thresholds.
-func (al *AgentLoop) maybeSummarize(agent *AgentInstance, sessionKey, channel, chatID string) {
+func (al *AgentLoop) maybeSummarize(ctx context.Context, agent *AgentInstance, sessionKey, channel, chatID string) {
 	newHistory := agent.Sessions.GetHistory(sessionKey)
 	tokenEstimate := al.estimateTokens(newHistory)
 	threshold := agent.ContextWindow * 75 / 100
@@ -1175,10 +1131,11 @@ func (al *AgentLoop) maybeSummarize(agent *AgentInstance, sessionKey, channel, c
 	if len(newHistory) > 20 || tokenEstimate > threshold {
 		summarizeKey := agent.ID + ":" + sessionKey
 		if _, loading := al.summarizing.LoadOrStore(summarizeKey, true); !loading {
+			// Propagate tracking context so summarization LLM calls are reported.
 			go func() {
 				defer al.summarizing.Delete(summarizeKey)
 				logger.Debug("Memory threshold reached. Optimizing conversation history...")
-				al.summarizeSession(agent, sessionKey)
+				al.summarizeSession(ctx, agent, sessionKey)
 			}()
 		}
 	}
@@ -1325,8 +1282,9 @@ func formatToolsForLog(toolDefs []providers.ToolDefinition) string {
 }
 
 // summarizeSession summarizes the conversation history for a session.
-func (al *AgentLoop) summarizeSession(agent *AgentInstance, sessionKey string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+func (al *AgentLoop) summarizeSession(parentCtx context.Context, agent *AgentInstance, sessionKey string) {
+	// Derive a timeout context from the parent so LLM tracking context propagates.
+	ctx, cancel := context.WithTimeout(parentCtx, 120*time.Second)
 	defer cancel()
 
 	history := agent.Sessions.GetHistory(sessionKey)

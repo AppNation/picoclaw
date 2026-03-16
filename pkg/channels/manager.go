@@ -350,6 +350,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	// Start the dispatcher that reads from the bus and routes to workers
 	go m.dispatchOutbound(dispatchCtx)
 	go m.dispatchOutboundMedia(dispatchCtx)
+	go m.dispatchTokenUsage(dispatchCtx)
 
 	// Start the TTL janitor that cleans up stale typing/placeholder entries
 	go m.runTTLJanitor(dispatchCtx)
@@ -629,6 +630,34 @@ func (m *Manager) dispatchOutboundMedia(ctx context.Context) {
 		"Unknown channel for outbound media message",
 		"Channel has no active worker, skipping media message",
 	)
+}
+
+// dispatchTokenUsage reads TokenUsageMessages from the bus and sends them to
+// all channels that implement the TokenUsageSender interface. This is a
+// broadcast — every capable channel receives every usage message.
+func (m *Manager) dispatchTokenUsage(ctx context.Context) {
+	logger.InfoC("channels", "Token usage dispatcher started")
+
+	for {
+		msg, ok := m.bus.SubscribeTokenUsage(ctx)
+		if !ok {
+			logger.InfoC("channels", "Token usage dispatcher stopped")
+			return
+		}
+
+		m.mu.RLock()
+		for name, w := range m.workers {
+			if ts, ok := w.ch.(TokenUsageSender); ok {
+				if err := ts.SendTokenUsage(ctx, msg); err != nil {
+					logger.WarnCF("channels", "Failed to send token usage", map[string]any{
+						"channel": name,
+						"error":   err.Error(),
+					})
+				}
+			}
+		}
+		m.mu.RUnlock()
+	}
 }
 
 // runMediaWorker processes outbound media messages for a single channel.

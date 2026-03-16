@@ -29,7 +29,6 @@ type ToolLoopConfig struct {
 type ToolLoopResult struct {
 	Content    string
 	Iterations int
-	Usage      *providers.UsageInfo
 }
 
 // RunToolLoop executes the LLM + tool call iteration loop.
@@ -42,8 +41,6 @@ func RunToolLoop(
 ) (*ToolLoopResult, error) {
 	iteration := 0
 	var finalContent string
-	var totalUsage providers.UsageInfo
-	hasUsage := false
 
 	for iteration < config.MaxIterations {
 		iteration++
@@ -74,14 +71,6 @@ func RunToolLoop(
 					"error":     err.Error(),
 				})
 			return nil, fmt.Errorf("LLM call failed: %w", err)
-		}
-
-		// Accumulate token usage across all iterations.
-		if response.Usage != nil {
-			totalUsage.PromptTokens += response.Usage.PromptTokens
-			totalUsage.CompletionTokens += response.Usage.CompletionTokens
-			totalUsage.TotalTokens += response.Usage.TotalTokens
-			hasUsage = true
 		}
 
 		// 4. If no tool calls, we're done
@@ -166,13 +155,8 @@ func RunToolLoop(
 		}
 	}
 
-	var usagePtr *providers.UsageInfo
-	if hasUsage {
-		usagePtr = &totalUsage
-	}
 	return &ToolLoopResult{
 		Content:    finalContent,
 		Iterations: iteration,
-		Usage:      usagePtr,
 	}, nil
 }

@@ -51,6 +51,13 @@ type Channel interface {
 	ReasoningChannelID() string
 }
 
+// TokenUsageSender is implemented by channels that can report per-call token usage
+// to a backend. The Manager dispatches TokenUsageMessages to all channels that
+// implement this interface.
+type TokenUsageSender interface {
+	SendTokenUsage(ctx context.Context, msg bus.TokenUsageMessage) error
+}
+
 // BaseChannelOption is a functional option for configuring a BaseChannel.
 type BaseChannelOption func(*BaseChannel)
 
