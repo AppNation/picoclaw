@@ -26,12 +26,12 @@ import (
 const (
 	channelName = "websocket_client"
 
-	defaultReconnectDelay = 5  // seconds
-	defaultPingInterval   = 30 // seconds
-	maxReconnectDelay     = 60 // seconds
+	defaultReconnectDelay = 5   // seconds
+	defaultPingInterval   = 30  // seconds
+	maxReconnectDelay     = 120 // seconds
 	writeTimeout          = 10 * time.Second
 	handshakeTimeout      = 10 * time.Second
-	jitterMax             = time.Second // random jitter [0, 1s) to prevent thundering herd
+	jitterMax             = 30 * time.Second // random jitter [0, 30s) to spread reconnects across ~2800 pods
 
 	// Small WS buffers for low-spec K8s pods
 	readBufferSize  = 1024
@@ -140,6 +140,10 @@ func (c *WebSocketClientChannel) Start(ctx context.Context) error {
 	})
 
 	c.ctx, c.cancel = context.WithCancel(ctx)
+
+	// Spread initial connections across pods to avoid thundering herd on deploy/restart.
+	initialJitter := time.Duration(rand.Int64N(int64(jitterMax)))
+	time.Sleep(initialJitter)
 
 	if err := c.connect(); err != nil {
 		logger.WarnCF(channelName, "Initial connection failed, will retry in background", map[string]any{
