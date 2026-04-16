@@ -190,6 +190,15 @@ func resolveProviderSelection(cfg *config.Config) (providerSelection, error) {
 					sel.apiBase = "https://api.mistral.ai/v1"
 				}
 			}
+		case "qwen", "alibaba", "dashscope":
+			if cfg.Providers.Qwen.APIKey != "" {
+				sel.apiKey = cfg.Providers.Qwen.APIKey
+				sel.apiBase = cfg.Providers.Qwen.APIBase
+				sel.proxy = cfg.Providers.Qwen.Proxy
+				if sel.apiBase == "" {
+					sel.apiBase = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+				}
+			}
 		case "github_copilot", "copilot":
 			sel.providerType = providerTypeGitHubCopilot
 			if cfg.Providers.GitHubCopilot.APIBase != "" {
@@ -299,6 +308,13 @@ func resolveProviderSelection(cfg *config.Config) (providerSelection, error) {
 			sel.proxy = cfg.Providers.Mistral.Proxy
 			if sel.apiBase == "" {
 				sel.apiBase = "https://api.mistral.ai/v1"
+			}
+		case (strings.Contains(lowerModel, "qwen") || strings.HasPrefix(model, "qwen/")) && cfg.Providers.Qwen.APIKey != "":
+			sel.apiKey = cfg.Providers.Qwen.APIKey
+			sel.apiBase = cfg.Providers.Qwen.APIBase
+			sel.proxy = cfg.Providers.Qwen.Proxy
+			if sel.apiBase == "" {
+				sel.apiBase = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 			}
 		case cfg.Providers.VLLM.APIBase != "":
 			sel.apiKey = cfg.Providers.VLLM.APIKey
