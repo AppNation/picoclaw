@@ -25,7 +25,7 @@ import (
 
 const (
 	minIntervalMinutes     = 5
-	defaultIntervalMinutes = 30
+	defaultIntervalMinutes = 60
 )
 
 // HeartbeatHandler is the function type for handling heartbeat.
