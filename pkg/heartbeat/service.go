@@ -217,7 +217,8 @@ func (hs *HeartbeatService) executeHeartbeat() {
 	hs.logInfof("Heartbeat completed: %s", result.ForLLM)
 }
 
-// buildPrompt builds the heartbeat prompt from HEARTBEAT.md
+// buildPrompt builds the heartbeat prompt from HEARTBEAT.md.
+// Returns "" if no tasks are defined — caller skips the LLM call entirely.
 func (hs *HeartbeatService) buildPrompt() string {
 	heartbeatPath := filepath.Join(hs.workspace, "HEARTBEAT.md")
 
@@ -231,22 +232,41 @@ func (hs *HeartbeatService) buildPrompt() string {
 		return ""
 	}
 
-	content := string(data)
-	if len(content) == 0 {
+	// Extract only the tasks section (content after the last "---" separator).
+	// If nothing meaningful is defined, skip the LLM call entirely — no tokens spent.
+	tasks := extractTasksSection(string(data))
+	if tasks == "" {
 		return ""
 	}
 
 	now := time.Now().Format("2006-01-02 15:04:05")
-	return fmt.Sprintf(`# Heartbeat Check
+	return fmt.Sprintf(`# Heartbeat — %s
 
-Current time: %s
-
-You are a proactive AI assistant. This is a scheduled heartbeat check.
-Review the following tasks and execute any necessary actions using available skills.
-If there is nothing that requires attention, respond ONLY with: HEARTBEAT_OK
+Execute each task below. Do NOT read any files or call any tools unless a specific task requires it.
+Respond ONLY with HEARTBEAT_OK if all tasks are done or nothing needs attention.
 
 %s
-`, now, content)
+`, now, tasks)
+}
+
+// extractTasksSection returns the content after the last "---" separator in a
+// HEARTBEAT.md file, trimmed of whitespace and the default placeholder line.
+// Returns "" when no real tasks are present.
+func extractTasksSection(content string) string {
+	const sep = "\n---\n"
+	idx := strings.LastIndex(content, sep)
+	var tasks string
+	if idx >= 0 {
+		tasks = content[idx+len(sep):]
+	} else {
+		// No separator found — treat the whole file as the task list.
+		tasks = content
+	}
+
+	// Remove the default placeholder that ships with the template.
+	tasks = strings.ReplaceAll(tasks, "Add your heartbeat tasks below this line:", "")
+	tasks = strings.TrimSpace(tasks)
+	return tasks
 }
 
 // createDefaultHeartbeatTemplate creates the default HEARTBEAT.md file

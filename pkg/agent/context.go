@@ -458,7 +458,15 @@ func (cb *ContextBuilder) LoadSystemFiles() string {
 
 	var files []string
 	_ = filepath.WalkDir(cb.systemFilesPath, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr == nil && !d.IsDir() && strings.HasSuffix(strings.ToLower(d.Name()), ".md") {
+		if walkErr != nil {
+			return nil
+		}
+		// Skip Kubernetes ConfigMap internal directories (named "..data", "..YYYY_MM_DD_..." etc.)
+		// These are atomic-update staging dirs that duplicate the real files.
+		if d.IsDir() && strings.HasPrefix(d.Name(), "..") {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() && strings.HasSuffix(strings.ToLower(d.Name()), ".md") {
 			files = append(files, path)
 		}
 		return nil
