@@ -631,6 +631,23 @@ func (cb *ContextBuilder) BuildMessages(
 	return messages
 }
 
+// BuildHeartbeatMessages builds a minimal message set for heartbeat LLM calls.
+// Skips the full system prompt (identity, bootstrap files, skills, memory) to
+// save ~3,000+ tokens per heartbeat. The model still receives tool definitions
+// via the provider's tools parameter — it doesn't need the system prompt for that.
+func (cb *ContextBuilder) BuildHeartbeatMessages(prompt, channel, chatID string) []providers.Message {
+	workspacePath, _ := filepath.Abs(cb.workspace)
+	now := time.Now().Format("2006-01-02 15:04 (Monday)")
+	systemPrompt := fmt.Sprintf(
+		"Workspace: %s\nCurrent time: %s\nExecute the task using tools only if required. Reply HEARTBEAT_OK when done.",
+		workspacePath, now,
+	)
+	return []providers.Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: prompt},
+	}
+}
+
 func sanitizeHistoryForProvider(history []providers.Message) []providers.Message {
 	if len(history) == 0 {
 		return history

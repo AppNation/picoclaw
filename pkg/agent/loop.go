@@ -48,15 +48,16 @@ type AgentLoop struct {
 
 // processOptions configures how a message is processed
 type processOptions struct {
-	SessionKey      string   // Session identifier for history/context
-	Channel         string   // Target channel for tool execution
-	ChatID          string   // Target chat ID for tool execution
-	UserMessage     string   // User message content (may include prefix)
-	Media           []string // media:// refs from inbound message
-	DefaultResponse string   // Response when LLM returns empty
-	EnableSummary   bool     // Whether to trigger summarization
-	SendResponse    bool     // Whether to send response via bus
-	NoHistory       bool     // If true, don't load session history (for heartbeat)
+	SessionKey          string   // Session identifier for history/context
+	Channel             string   // Target channel for tool execution
+	ChatID              string   // Target chat ID for tool execution
+	UserMessage         string   // User message content (may include prefix)
+	Media               []string // media:// refs from inbound message
+	DefaultResponse     string   // Response when LLM returns empty
+	EnableSummary       bool     // Whether to trigger summarization
+	SendResponse        bool     // Whether to send response via bus
+	NoHistory           bool     // If true, don't load session history (for heartbeat)
+	MinimalSystemPrompt bool     // If true, use a tiny system prompt (workspace path only) instead of the full one — for heartbeat
 }
 
 const defaultResponse = "I've completed processing but have no response to give. Increase `max_tool_iterations` in config.json."
@@ -424,14 +425,15 @@ func (al *AgentLoop) ProcessHeartbeat(
 		return "", fmt.Errorf("no default agent for heartbeat")
 	}
 	response, err := al.runAgentLoop(trackCtx, agent, processOptions{
-		SessionKey:      "heartbeat",
-		Channel:         channel,
-		ChatID:          chatID,
-		UserMessage:     content,
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
-		NoHistory:       true,
+		SessionKey:          "heartbeat",
+		Channel:             channel,
+		ChatID:              chatID,
+		UserMessage:         content,
+		DefaultResponse:     defaultResponse,
+		EnableSummary:       false,
+		SendResponse:        false,
+		NoHistory:           true,
+		MinimalSystemPrompt: true,
 	})
 	return response, err
 }
@@ -659,14 +661,19 @@ func (al *AgentLoop) runAgentLoop(
 		history = agent.Sessions.GetHistory(opts.SessionKey)
 		summary = agent.Sessions.GetSummary(opts.SessionKey)
 	}
-	messages := agent.ContextBuilder.BuildMessages(
-		history,
-		summary,
-		opts.UserMessage,
-		opts.Media,
-		opts.Channel,
-		opts.ChatID,
-	)
+	var messages []providers.Message
+	if opts.MinimalSystemPrompt {
+		messages = agent.ContextBuilder.BuildHeartbeatMessages(opts.UserMessage, opts.Channel, opts.ChatID)
+	} else {
+		messages = agent.ContextBuilder.BuildMessages(
+			history,
+			summary,
+			opts.UserMessage,
+			opts.Media,
+			opts.Channel,
+			opts.ChatID,
+		)
+	}
 
 	// Resolve media:// refs to base64 data URLs (streaming)
 	maxMediaSize := al.cfg.Agents.Defaults.GetMaxMediaSize()
