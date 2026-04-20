@@ -56,7 +56,7 @@ func (t *CronTool) Name() string {
 
 // Description returns the tool description
 func (t *CronTool) Description() string {
-	return "Schedule reminders, tasks, or system commands. IMPORTANT: When user asks to be reminded or scheduled, you MUST call this tool. Use 'at_seconds' for one-time reminders (e.g., 'remind me in 10 minutes' → at_seconds=600). Use 'every_seconds' ONLY for recurring tasks (e.g., 'every 2 hours' → every_seconds=7200). Use 'cron_expr' for complex recurring schedules. Use 'command' to execute shell commands directly."
+	return "Schedule reminders, tasks, or system commands. IMPORTANT: When user asks to be reminded or scheduled, you MUST call this tool. Use 'at_seconds' for one-time reminders (e.g., 'remind me in 10 minutes' → at_seconds=600). Use 'every_seconds' ONLY for recurring tasks (e.g., 'every 2 hours' → every_seconds=7200). Use 'cron_expr' for complex recurring schedules. For tasks that require web search, fetching news, browsing the internet, or any LLM reasoning: set deliver=false and put the full task instruction in 'message' (e.g., message='Search the web for latest US-Iran news and summarize in 3 bullets') — the agent will process it with its tools when triggered. NEVER use 'command' for web requests, curl, or network operations — use 'command' ONLY for simple local shell commands like 'df -h' or 'uptime'."
 }
 
 // Parameters returns the tool parameters schema
@@ -75,7 +75,7 @@ func (t *CronTool) Parameters() map[string]any {
 			},
 			"command": map[string]any{
 				"type":        "string",
-				"description": "Optional: Shell command to execute directly (e.g., 'df -h'). If set, the agent will run this command and report output instead of just showing the message. 'deliver' will be forced to false for commands.",
+				"description": "Optional: Simple local shell command to execute (e.g., 'df -h', 'uptime'). ONLY for local system commands — do NOT use for curl, wget, web requests, or anything requiring network access. For web search or news tasks, use deliver=false with a task instruction in 'message' instead.",
 			},
 			"at_seconds": map[string]any{
 				"type":        "integer",
@@ -95,7 +95,7 @@ func (t *CronTool) Parameters() map[string]any {
 			},
 			"deliver": map[string]any{
 				"type":        "boolean",
-				"description": "If true, send message directly to channel. If false, let agent process message (for complex tasks). Default: true",
+				"description": "If true, send the 'message' text directly to the user as-is (for simple reminders like 'Time to drink water!'). If false, the agent will process 'message' as a task instruction using its tools (web search, file access, etc.) and send the result. Use deliver=false for any task requiring web search, news fetching, calculations, or LLM reasoning. Default: true",
 			},
 		},
 		"required": []string{"action"},
