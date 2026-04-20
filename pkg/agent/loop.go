@@ -60,7 +60,7 @@ type processOptions struct {
 	MinimalSystemPrompt bool     // If true, use a tiny system prompt (workspace path only) instead of the full one — for heartbeat
 }
 
-const defaultResponse = "I've completed processing but have no response to give. Increase `max_tool_iterations` in config.json."
+const defaultResponse = "I wasn't able to generate a response. Please try again."
 
 func NewAgentLoop(
 	cfg *config.Config,

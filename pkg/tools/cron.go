@@ -71,7 +71,7 @@ func (t *CronTool) Parameters() map[string]any {
 			},
 			"message": map[string]any{
 				"type":        "string",
-				"description": "The reminder/task message to display when triggered. If 'command' is used, this describes what the command does.",
+				"description": "For deliver=true: the text sent directly to the user (e.g., 'Time to drink water!'). For deliver=false: a full task instruction the agent will execute, including what to do AND how to respond (e.g., 'Search the web for the latest US-Iran news and send me a 3-bullet summary in Turkish').",
 			},
 			"command": map[string]any{
 				"type":        "string",
