@@ -95,7 +95,7 @@ func (t *CronTool) Parameters() map[string]any {
 			},
 			"deliver": map[string]any{
 				"type":        "boolean",
-				"description": "If true, send the 'message' text directly to the user as-is (for simple reminders like 'Time to drink water!'). If false, the agent will process 'message' as a task instruction using its tools (web search, file access, etc.) and send the result. Use deliver=false for any task requiring web search, news fetching, calculations, or LLM reasoning. Default: true",
+				"description": "If true, send the 'message' text directly to the user as-is (ONLY for simple static reminders like 'Time to drink water!' where no lookup is needed). If false, the agent will process 'message' as a task instruction using its tools (web search, file access, etc.) and send the result. Use deliver=false for ANY task involving news, web search, calculations, summaries, or LLM reasoning. Default: false",
 			},
 		},
 		"required": []string{"action"},
